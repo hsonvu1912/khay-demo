@@ -106,23 +106,41 @@ export const buildTrayPieces: BuildTrayPieces = async (spec, cuts) => {
   const wasm = await getManifold();
   const { CrossSection, Manifold } = wasm;
 
+  // ---- SỔ THU DỌN WASM ----
+  // manifold-3d là Emscripten: MỌI CrossSection/Manifold nằm trên heap C++ và
+  // KHÔNG được GC JS dọn — thiếu .delete() thì mỗi build rò hàng chục object,
+  // kéo slider liên tục là cạn heap/table WASM → mọi build SAU throw
+  // "table index is out of bounds" vĩnh viễn (chỉ reload cứu được). track()
+  // ghi sổ từng object trung gian, finally delete() TOÀN BỘ — an toàn vì kết
+  // quả trả về (TrayPiece) chỉ chứa TriMesh/số JS thuần, không giữ handle WASM.
+  // (wasm.Mesh là class JS thuần chứa typed array — không cần delete.)
+  const tracked: { delete(): void }[] = [];
+  const track = <O extends { delete(): void }>(o: O): O => {
+    tracked.push(o);
+    return o;
+  };
+  try {
   // ---- helpers 2D ----
   const rr = (cx: number, cy: number, ww: number, dd: number, r: number): CS =>
-    new CrossSection([
-      roundedRectPath({ cx, cy, w: ww, d: dd, r, segs: arcSegs }).map(
-        (pt) => [pt[0], pt[1]] as [number, number],
-      ),
-    ]);
-  const off = (cs: CS, delta: number): CS => cs.offset(delta, 'Round', 2, arcSegs);
+    track(
+      new CrossSection([
+        roundedRectPath({ cx, cy, w: ww, d: dd, r, segs: arcSegs }).map(
+          (pt) => [pt[0], pt[1]] as [number, number],
+        ),
+      ]),
+    );
+  const off = (cs: CS, delta: number): CS => track(cs.offset(delta, 'Round', 2, arcSegs));
   const rect = (rx0: number, ry0: number, rx1: number, ry1: number): CS =>
-    new CrossSection([
-      [
-        [rx0, ry0],
-        [rx1, ry0],
-        [rx1, ry1],
-        [rx0, ry1],
-      ] as [number, number][],
-    ]);
+    track(
+      new CrossSection([
+        [
+          [rx0, ry0],
+          [rx1, ry0],
+          [rx1, ry1],
+          [rx0, ry1],
+        ] as [number, number][],
+      ]),
+    );
 
   const outerCS = rr(w / 2, d / 2, w, d, outerR);
   // Lòng đồng tâm tuyệt đối với viền ngoài (offset đều −wallT).
@@ -140,43 +158,55 @@ export const buildTrayPieces: BuildTrayPieces = async (spec, cuts) => {
   const footCS = off(outerCS, -footInset);
   const bodyParts: Solid[] = [];
   // a. chân (plug hoặc đế thụt)
-  bodyParts.push(footCS.extrude(footH));
+  bodyParts.push(track(footCS.extrude(footH)));
   // b. vát 45° chân → thân (hull 2 lát mỏng — hợp lệ vì rounded-rect LỒI)
   bodyParts.push(
-    Manifold.hull([
-      footCS.extrude(EPS).translate([0, 0, footH - EPS]),
-      outerCS.extrude(EPS).translate([0, 0, zBody0]),
-    ]),
+    track(
+      Manifold.hull([
+        track(track(footCS.extrude(EPS)).translate([0, 0, footH - EPS])),
+        track(track(outerCS.extrude(EPS)).translate([0, 0, zBody0])),
+      ]),
+    ),
   );
   // c. thân chính tới chân bo miệng
-  bodyParts.push(outerCS.extrude(rimZ0 - zBody0).translate([0, 0, zBody0]));
+  bodyParts.push(track(track(outerCS.extrude(rimZ0 - zBody0)).translate([0, 0, zBody0])));
   // d. bo miệng NGOÀI — band bước 0.2, tiết diện thu theo inset(t đỉnh band);
   //    band lấn XUỐNG Z_LAP vào band dưới (rộng hơn → phần lấn bị che).
   for (let j = 0; j < nBands; j++) {
     const t0 = j * RIM_STEP;
     const t1 = Math.min((j + 1) * RIM_STEP, rimRound);
     bodyParts.push(
-      off(outerCS, -rimInset(t1))
-        .extrude(t1 - t0 + Z_LAP)
-        .translate([0, 0, rimZ0 + t0 - Z_LAP]),
+      track(
+        track(off(outerCS, -rimInset(t1)).extrude(t1 - t0 + Z_LAP)).translate([
+          0,
+          0,
+          rimZ0 + t0 - Z_LAP,
+        ]),
+      ),
     );
   }
-  const body = bodyParts.reduce((acc, m) => acc.add(m));
+  const body = bodyParts.reduce((acc, m) => track(acc.add(m)));
 
   // ---- CAVITY ----
   const cavParts: Solid[] = [];
   // e. vát mềm đáy lòng → vách (hull 2 lát mỏng)
   cavParts.push(
-    Manifold.hull([
-      off(pocketCS, -floorFillet).extrude(EPS).translate([0, 0, floorTopZ]),
-      pocketCS.extrude(EPS).translate([0, 0, floorTopZ + floorFillet]),
-    ]),
+    track(
+      Manifold.hull([
+        track(track(off(pocketCS, -floorFillet).extrude(EPS)).translate([0, 0, floorTopZ])),
+        track(track(pocketCS.extrude(EPS)).translate([0, 0, floorTopZ + floorFillet])),
+      ]),
+    ),
   );
   // f. thân lòng — lấn LÊN Z_LAP vào band bo trong đầu tiên (rộng hơn → che kín)
   cavParts.push(
-    pocketCS
-      .extrude(rimZ0 - (floorTopZ + floorFillet) + Z_LAP)
-      .translate([0, 0, floorTopZ + floorFillet]),
+    track(
+      track(pocketCS.extrude(rimZ0 - (floorTopZ + floorFillet) + Z_LAP)).translate([
+        0,
+        0,
+        floorTopZ + floorFillet,
+      ]),
+    ),
   );
   // g. bo miệng TRONG — band nở dần ra, lấn LÊN Z_LAP vào band trên (rộng hơn);
   //    band cuối vượt đỉnh 0.5 để cắt sạch
@@ -185,14 +215,18 @@ export const buildTrayPieces: BuildTrayPieces = async (spec, cuts) => {
     const t1 = Math.min((j + 1) * RIM_STEP, rimRound);
     const zTop = j === nBands - 1 ? h + 0.5 : rimZ0 + t1 + Z_LAP;
     cavParts.push(
-      off(pocketCS, rimInset(t1))
-        .extrude(zTop - (rimZ0 + t0))
-        .translate([0, 0, rimZ0 + t0]),
+      track(
+        track(off(pocketCS, rimInset(t1)).extrude(zTop - (rimZ0 + t0))).translate([
+          0,
+          0,
+          rimZ0 + t0,
+        ]),
+      ),
     );
   }
-  const cavity = cavParts.reduce((acc, m) => acc.add(m));
+  const cavity = cavParts.reduce((acc, m) => track(acc.add(m)));
 
-  const tray = body.subtract(cavity);
+  const tray = track(body.subtract(cavity));
 
   // ---- CUTS: cắt mảnh + mộng puzzle ở đáy ----
   const jig = jigsawDefaults();
@@ -234,14 +268,16 @@ export const buildTrayPieces: BuildTrayPieces = async (spec, cuts) => {
       axis === 'x' ? ptsUV : ptsUV.map(([u, v]) => [v, u] as [number, number]).reverse();
 
     // Làm tròn outline (opening −r/+r bo các góc lồi của tab).
-    const maleLow = off(off(new CrossSection([ptsXY]), -jig.roundMm), jig.roundMm);
+    const maleLow = off(off(track(new CrossSection([ptsXY])), -jig.roundMm), jig.roundMm);
     // Trên floorTopZ: cắt phẳng, hở 0.05 mỗi bên quanh đường cắt.
     const maleHigh =
       axis === 'x' ? rect(uMin, v0e, at - 0.05, v1e) : rect(v0e, uMin, v1e, at - 0.05);
 
-    const maleSolid = maleLow
-      .extrude(floorTopZ)
-      .add(maleHigh.extrude(h + 1 - floorTopZ).translate([0, 0, floorTopZ]));
+    const maleSolid = track(
+      track(maleLow.extrude(floorTopZ)).add(
+        track(track(maleHigh.extrude(h + 1 - floorTopZ)).translate([0, 0, floorTopZ])),
+      ),
+    );
     // Mảnh CÁI = SUBTRACT "phần thuộc đực + khe" — KHÔNG intersect khối cái:
     // intersect từng giữ lại màng 0-dày bịt miệng hốc mộng (femaleHigh extrude
     // từ đúng floorTopZ chạm-khít mặt sàn ngay trên hốc → mảng tam giác thể
@@ -250,12 +286,12 @@ export const buildTrayPieces: BuildTrayPieces = async (spec, cuts) => {
     // at+0.05 (giữ hở 0.05 mỗi bên như cũ), phủ trọn 0..h+1.
     const maleClaimHigh =
       axis === 'x' ? rect(uMin, v0e, at + 0.05, v1e) : rect(v0e, uMin, v1e, at + 0.05);
-    const femaleClaim = off(maleLow, jig.clearMm)
-      .extrude(floorTopZ)
-      .add(maleClaimHigh.extrude(h + 1));
+    const femaleClaim = track(
+      track(off(maleLow, jig.clearMm).extrude(floorTopZ)).add(track(maleClaimHigh.extrude(h + 1))),
+    );
 
-    const mA = p.m.intersect(maleSolid);
-    const mB = p.m.subtract(femaleClaim);
+    const mA = track(p.m.intersect(maleSolid));
+    const mB = track(p.m.subtract(femaleClaim));
     if (axis === 'x') {
       return [
         { m: mA, x0: p.x0, x1: at, y0: p.y0, y1: p.y1 },
@@ -314,7 +350,7 @@ export const buildTrayPieces: BuildTrayPieces = async (spec, cuts) => {
     }
     const mesh32 = new wasm.Mesh({ numProp: 3, vertProperties: pos, triVerts: raw.triVerts });
     mesh32.merge(); // weld đỉnh trùng sau quantize (no-op nếu đã kín)
-    const m2 = new Manifold(mesh32).simplify(SIM_EPS);
+    const m2 = track(track(new Manifold(mesh32)).simplify(SIM_EPS));
     const st = m2.status();
     if (st !== 'NoError') {
       throw new Error(`Khay "${label}": manifold lỗi (${st}).`);
@@ -339,4 +375,14 @@ export const buildTrayPieces: BuildTrayPieces = async (spec, cuts) => {
       ] as [number, number, number],
     };
   });
+  } finally {
+    // Free TẤT CẢ object WASM trung gian — kể cả khi throw giữa chừng.
+    for (const o of tracked) {
+      try {
+        o.delete();
+      } catch {
+        /* object đã bị delete (không xảy ra với track 1-lần) — bỏ qua */
+      }
+    }
+  }
 };

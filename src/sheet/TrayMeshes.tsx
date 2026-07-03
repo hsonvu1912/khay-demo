@@ -7,7 +7,7 @@
 // (hệ engine, trong group mapping của Scene3D). Kèm DrawerGhost: khung edges
 // LÒNG ngăn kéo W×D×H từ z=0.
 // =============================================================================
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import type {} from '@react-three/fiber';
 import { BoxGeometry, BufferAttribute, BufferGeometry, EdgesGeometry } from 'three';
 import type { TriMesh } from '@/engine/geometry/types';
@@ -15,23 +15,69 @@ import { findColor, previewHexOf } from '@/engine/palette';
 import type { KhaySheet, PieceEntry } from './useKhaySheet';
 
 /** TriMesh engine → BufferGeometry non-indexed (flat normals). */
-function usePieceGeometry(mesh: TriMesh): BufferGeometry {
-  const geo = useMemo(() => {
-    const g = new BufferGeometry();
-    g.setAttribute('position', new BufferAttribute(new Float32Array(mesh.positions), 3));
-    g.setIndex(mesh.indices);
-    const flat = g.toNonIndexed(); // tách vertex → normal per-face, cạnh sắc
-    flat.computeVertexNormals();
-    g.dispose();
-    return flat;
-  }, [mesh]);
-  useEffect(() => () => geo.dispose(), [geo]);
-  return geo;
+function buildGeometry(mesh: TriMesh): BufferGeometry {
+  const g = new BufferGeometry();
+  g.setAttribute('position', new BufferAttribute(new Float32Array(mesh.positions), 3));
+  g.setIndex(mesh.indices);
+  const flat = g.toNonIndexed(); // tách vertex → normal per-face, cạnh sắc
+  flat.computeVertexNormals();
+  g.dispose();
+  return flat;
 }
 
-function PieceMesh({ entry, active }: { entry: PieceEntry; active: boolean }) {
-  const { tray, piece } = entry;
-  const geo = usePieceGeometry(piece.mesh);
+/**
+ * Geometry CHIA SẺ theo TriMesh identity: cache pieces của hook dedup theo
+ * hình dạng nên hàng trăm khay trùng hình trỏ CÙNG TriMesh — chỉ dựng 1
+ * BufferGeometry/hình (924 khay ~18 hình ≈ 18 geometry thay vì 924 bản
+ * non-indexed nặng MB → hết cạn RAM ở config lớn). Dispose sau commit cho
+ * hình không còn dùng.
+ */
+function useSharedGeometries(pieces: PieceEntry[]): Map<TriMesh, BufferGeometry> {
+  const cacheRef = useRef(new Map<TriMesh, BufferGeometry>());
+  const geos = useMemo(() => {
+    const cache = cacheRef.current;
+    const live = new Map<TriMesh, BufferGeometry>();
+    for (const pe of pieces) {
+      const mesh = pe.piece.mesh;
+      if (live.has(mesh)) continue;
+      let g = cache.get(mesh);
+      if (!g) {
+        g = buildGeometry(mesh);
+        cache.set(mesh, g); // idempotent — StrictMode render đôi không tạo trùng
+      }
+      live.set(mesh, g);
+    }
+    return live;
+  }, [pieces]);
+  useEffect(() => {
+    const cache = cacheRef.current;
+    for (const [mesh, geo] of cache) {
+      if (!geos.has(mesh)) {
+        geo.dispose();
+        cache.delete(mesh);
+      }
+    }
+  }, [geos]);
+  useEffect(() => {
+    const cache = cacheRef.current;
+    return () => {
+      for (const geo of cache.values()) geo.dispose();
+      cache.clear();
+    };
+  }, []);
+  return geos;
+}
+
+function PieceMesh({
+  entry,
+  geo,
+  active,
+}: {
+  entry: PieceEntry;
+  geo: BufferGeometry;
+  active: boolean;
+}) {
+  const { tray } = entry;
   // previewHexOf: clamp hex cực đoan (#000000/#FFFFFF) để 3D còn diffuse shading;
   // swatch UI vẫn dùng hex gốc (đúng thiết kế).
   const hex = previewHexOf(findColor(tray.color));
@@ -73,12 +119,22 @@ export function DrawerGhost({ w, d, h }: { w: number; d: number; h: number }) {
 
 export function TrayMeshes({ sheet }: { sheet: KhaySheet }) {
   const { drawer } = sheet.layout;
+  const geos = useSharedGeometries(sheet.pieces);
   return (
     <>
       <DrawerGhost w={drawer.w} d={drawer.d} h={drawer.h} />
-      {sheet.pieces.map((pe) => (
-        <PieceMesh key={pe.key} entry={pe} active={pe.tray.levelIdx === sheet.activeLevel} />
-      ))}
+      {sheet.pieces.map((pe) => {
+        const geo = geos.get(pe.piece.mesh);
+        if (!geo) return null; // không xảy ra — geos dựng từ chính pieces
+        return (
+          <PieceMesh
+            key={pe.key}
+            entry={pe}
+            geo={geo}
+            active={pe.tray.levelIdx === sheet.activeLevel}
+          />
+        );
+      })}
     </>
   );
 }

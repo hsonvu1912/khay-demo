@@ -3,8 +3,11 @@
 // catalog + selection + undo, gọi pure ops của @/engine/layout, memo hoá build.
 // V2: MỘT lưới chung toàn ngăn kéo, mỗi block = 1 KHAY RỜI có màu riêng;
 // selection là Ô LƯỚI (không còn tray index). Mesh giờ ASYNC (CSG manifold-3d
-// WASM): pipeline build nền + cache theo spec+cuts, GIỮ pieces cũ trong lúc
-// build lại (không nháy trắng). MỌI component UI chỉ nhận { sheet } từ đây.
+// WASM): pipeline build nền + cache theo HÌNH DẠNG (spec-không-tên + cuts —
+// hàng trăm khay trùng hình chỉ CSG 1 lần), build TUẦN TỰ nhả event loop giữa
+// các hình (không đơ UI), GIỮ pieces cũ trong lúc build lại (không nháy
+// trắng); lỗi CSG surface lên buildError (không nuốt im lặng). MỌI component
+// UI chỉ nhận { sheet } từ đây.
 // =============================================================================
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as L from '@/engine/layout';
@@ -81,6 +84,8 @@ type Built = { trays: PlacedTray2[]; warnings: string[] };
 
 const DEFAULT_DRAWER = { w: 400, d: 300, h: 120 };
 const UNDO_CAP = 50;
+/** Trần cache theo HÌNH DẠNG (không phải theo khay) — dedup nên 300 là dư dả;
+ * prune không bao giờ đụng hình của built hiện tại (xem pipeline). */
 const PIECE_CACHE_CAP = 300;
 
 /** Built an toàn tuyệt đối (default layout × default catalog) — không thể fail. */
@@ -91,9 +96,20 @@ function safeFallbackBuilt(): Built {
   );
 }
 
-/** Khoá cache CSG: spec + cuts quyết định trọn vẹn hình mảnh. */
-function trayCacheKey(t: PlacedTray2): string {
-  return JSON.stringify(t.spec) + '|' + JSON.stringify(t.cuts);
+/**
+ * Khoá cache CSG: spec KHÔNG TÊN + cuts — tên khay ('T1-L1'…) không đổi hình
+ * dạng, giữ tên trong khoá từng làm 924 khay trùng hình build CSG 924 lần
+ * (dedup vô hiệu → đơ cứng rồi crash tab). Pieces trong cache build với tên
+ * canonical rỗng; assemble() gắn lại tên khay thật khi lắp PieceEntry.
+ */
+function trayShapeKey(t: PlacedTray2): string {
+  const { name: _name, ...shape } = t.spec;
+  return JSON.stringify(shape) + '|' + JSON.stringify(t.cuts);
+}
+
+/** Nhả event loop — chen giữa các build CSG WASM (đồng bộ 100% sau khi nạp). */
+function nextTick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 export function useKhaySheet(): KhaySheet {
@@ -187,21 +203,24 @@ export function useKhaySheet(): KhaySheet {
   const lastGoodRef = useRef<Built | null>(null);
   if (buildRes.built) lastGoodRef.current = buildRes.built;
   const built = buildRes.built ?? lastGoodRef.current ?? (lastGoodRef.current = safeFallbackBuilt());
-  const buildError = buildRes.error;
 
-  // ── pieces pipeline: CSG async nền + cache theo spec+cuts ─────────────────
+  // ── pieces pipeline: CSG async nền + cache theo HÌNH DẠNG (dedup tên) ─────
   // Giữ pieces CŨ trong lúc build lại — preview không nháy trắng.
   const pieceCacheRef = useRef(new Map<string, TrayPiece[]>());
+  // Hình đang build dở (share giữa các effect-run chồng nhau khi kéo slider
+  // liên tục) — không CSG lại hình đã khởi động.
+  const inflightRef = useRef(new Map<string, Promise<TrayPiece[]>>());
   const [pieces, setPieces] = useState<PieceEntry[]>([]);
   const [building, setBuilding] = useState(true);
+  // Lỗi CSG async (khác buildError sync của layout) — surface, KHÔNG nuốt.
+  const [csgErrors, setCsgErrors] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     const cache = pieceCacheRef.current;
-    // Refresh vị trí LRU cho các khay đang dùng (Map giữ insertion order) —
-    // prune sau đó không bao giờ đụng entry của built hiện tại.
-    for (const t of built.trays) {
-      const k = trayCacheKey(t);
+    const currentKeys = new Set(built.trays.map(trayShapeKey));
+    // Refresh vị trí LRU cho các hình đang dùng (Map giữ insertion order).
+    for (const k of currentKeys) {
       const v = cache.get(k);
       if (v) {
         cache.delete(k);
@@ -211,44 +230,85 @@ export function useKhaySheet(): KhaySheet {
     const assemble = (): PieceEntry[] => {
       const out: PieceEntry[] = [];
       for (const t of built.trays) {
-        const ps = cache.get(trayCacheKey(t));
-        if (!ps) continue; // khay build fail hiếm — bỏ, không crash scene
+        const ps = cache.get(trayShapeKey(t));
+        if (!ps) continue; // hình build fail — lỗi đã surface qua csgErrors
         for (const p of ps) {
-          out.push({ key: `${t.levelIdx}:${t.block.r},${t.block.c}:${p.name}`, tray: t, piece: p });
+          // Cache build với tên canonical rỗng → p.name = '' | '-M1'…; gắn lại
+          // tên khay thật để PieceEntry.key/giá/UI đúng như build riêng lẻ.
+          const pieceName = t.spec.name + p.name;
+          out.push({
+            key: `${t.levelIdx}:${t.block.r},${t.block.c}:${pieceName}`,
+            tray: t,
+            piece: { ...p, name: pieceName },
+          });
         }
       }
       return out;
     };
-    const missing = built.trays.filter((t) => !cache.has(trayCacheKey(t)));
-    if (missing.length === 0) {
+    const publish = (errors: string[]): void => {
       setPieces(assemble());
       setBuilding(false);
-      return;
+      setCsgErrors((prev) => (prev.length === 0 && errors.length === 0 ? prev : errors));
+    };
+    // missing theo HÌNH (dedup): 1 khay đại diện mỗi khoá — 924 khay ~18 hình.
+    const missing = new Map<string, PlacedTray2>();
+    for (const t of built.trays) {
+      const k = trayShapeKey(t);
+      if (!cache.has(k) && !missing.has(k)) missing.set(k, t);
     }
-    setBuilding(true);
     void (async () => {
-      await Promise.all(
-        missing.map(async (t) => {
-          try {
-            cache.set(trayCacheKey(t), await buildTrayPieces(t.spec, t.cuts));
-          } catch {
-            /* spec lỗi hiếm — khay này không có mảnh, các khay khác vẫn hiện */
-          }
-        }),
-      );
-      if (cancelled) return; // built đã đổi giữa chừng — effect mới lo tiếp
-      while (cache.size > PIECE_CACHE_CAP) {
-        const oldest = cache.keys().next().value as string | undefined;
-        if (oldest === undefined) break;
-        cache.delete(oldest);
+      // MỌI setState của pipeline nằm SAU nextTick — setState sync ngay trong
+      // passive effect chồng 25+ lần khi kéo slider dồn dập → React dev bắn
+      // "Maximum update depth exceeded". Deferral cũng coalesce burst: run bị
+      // cancel không set gì cả.
+      await nextTick();
+      if (cancelled) return;
+      if (missing.size === 0) {
+        publish([]);
+        return;
       }
-      setPieces(assemble());
-      setBuilding(false);
+      setBuilding(true);
+      const errors: string[] = [];
+      // TUẦN TỰ + nhả event loop sau mỗi hình: Promise.all từng xếp hàng trăm
+      // microtask CSG nặng liên tục → main thread đóng băng nhiều phút.
+      for (const [key, t] of missing) {
+        if (cancelled) return; // built đã đổi giữa chừng — effect mới lo tiếp
+        try {
+          let job = inflightRef.current.get(key);
+          if (!job) {
+            job = buildTrayPieces({ ...t.spec, name: '' }, t.cuts).finally(() => {
+              inflightRef.current.delete(key);
+            });
+            inflightRef.current.set(key, job);
+          }
+          cache.set(key, await job);
+        } catch (e) {
+          // Log stack thật (vd RuntimeError từ manifold.wasm) + báo tiếng Việt.
+          console.error(`[khay] Dựng hình CSG thất bại cho khay ${t.spec.name}:`, e);
+          const msg = (e instanceof Error ? e.message : String(e)).replace(/^Khay "[^"]*":\s*/, '');
+          errors.push(`Dựng hình khay ${t.spec.name} thất bại: ${msg}`);
+        }
+        await nextTick();
+      }
+      if (cancelled) return;
+      // Prune LRU: trần scale theo số hình đang dùng, KHÔNG BAO GIỜ xoá hình
+      // của built hiện tại (xoá là mesh biến mất + giá tính thiếu).
+      const cap = Math.max(PIECE_CACHE_CAP, currentKeys.size);
+      for (const k of cache.keys()) {
+        if (cache.size <= cap) break;
+        if (!currentKeys.has(k)) cache.delete(k);
+      }
+      publish(errors);
     })();
     return () => {
       cancelled = true;
     };
   }, [built]);
+
+  // buildError = lỗi sync layout HOẶC lỗi CSG async — user luôn thấy lý do
+  // khay biến mất (badge ⚠ TopBar) thay vì scene trống với giá sàn.
+  const buildError =
+    buildRes.error ?? (csgErrors.length > 0 ? csgErrors.join('\n') : null);
 
   // ── price: từ pieces hiện có (mảnh CSG thật → thể tích thật) ──────────────
   const price = useMemo(

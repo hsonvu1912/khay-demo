@@ -1,9 +1,21 @@
-# khay-demo — Configurator khay chia ngăn kéo in 3D (demo local)
+# khay-demo — Configurator khay chia ngăn kéo in 3D (V2 "khay module rời")
 
-Khách đo lòng ngăn kéo → nhập mm → chỉnh lưới ô kiểu **Excel-trên-3D** (giống
-ngan-excel-demo) → chọn màu **Bambu Lab PLA Matte** cho từng khay → tải ZIP
-**STL binary/khay** in trên bàn 180×180×180mm. Giá theo **gram nhựa ước tính**.
-Thẩm mỹ: Apple/Jony Ive — bo góc đều, matte, tối giản, nền giấy ấm MUUTO.
+LIVE nghiệm thu: **https://hsonvu1912.github.io/khay-demo/** (repo này, nhánh
+gh-pages; deploy lại: `GHPAGES_BASE=/khay-demo/ pnpm build` → push dist).
+
+Khách đo lòng ngăn kéo → nhập mm → MỘT lưới Excel-trên-3D trải toàn lòng ngăn;
+**mỗi ô (sau gộp) = MỘT KHAY RỜI** màu riêng (Bambu PLA Matte), khe 0.5mm.
+Khay vượt bàn in 180 → tự **cắt thành mảnh ghép mộng puzzle ở đáy** (khe
+0.15mm, ấn thẳng, lòng liền mạch). Tải ZIP **STL binary/mảnh** + manifest.
+Giá theo **gram nhựa** (đ/g + phí/mảnh, chỉnh trong ⚙). Tạo hình V2 theo ảnh
+tham khảo Apple: vách 4mm chunky, bo ngoài R11, **miệng bo tròn 1.4**, đáy
+lòng vát mềm, chân đế thụt 2mm; stack ngăn sâu bằng chân cắm + vát 45°
+(tự sinh khi khay tầng trên trùng đáy khay dưới).
+
+⚠️ V2 chuyển lõi dựng khối sang **CSG manifold-3d (WASM, npm)** — engine
+không còn "zero-dep" như v1; mirror giai đoạn B cần thêm dep này vào cả 2 repo.
+Mọi object manifold trung gian PHẢI .delete() (đã làm trong finally — leak
+WASM làm CSG chết im lặng sau ~600 build).
 
 Chạy: `pnpm install && pnpm dev` → http://localhost:5190 · Test: `pnpm test`
 (test-geometry + test-model) · Typecheck: `pnpm typecheck`
