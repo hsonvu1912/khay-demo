@@ -1,0 +1,34 @@
+{
+  "name": "khay-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.4",
+  "scripts": {
+    "dev": "vite --port 5190 --strictPort",
+    "build": "tsc && vite build",
+    "typecheck": "tsc",
+    "test-geometry": "tsx scripts/test-geometry.ts",
+    "test-model": "tsx scripts/test-model.ts",
+    "test": "tsx scripts/test-geometry.ts && tsx scripts/test-model.ts"
+  },
+  "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/three": "^0.184.1",
+    "@vitejs/plugin-react": "^5",
+    "tailwindcss": "^4",
+    "tsx": "^4.22.3",
+    "typescript": "^5",
+    "vite": "^7"
+  }
+}
