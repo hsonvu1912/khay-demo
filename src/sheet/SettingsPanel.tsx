@@ -1,11 +1,14 @@
 // =============================================================================
 // SettingsPanel — "Cài đặt (demo admin)": panel trượt từ phải (desktop 420px,
-// mobile full) sửa KhayCatalog qua sheet.setCatalog (áp NGAY). 3 nhóm gấp/mở:
+// mobile full) sửa KhayCatalog v2 qua sheet.setCatalog (áp NGAY). 4 nhóm gấp/mở:
 // (a) Bảng màu PLA Matte — toggle tồn kho từng màu;
-// (b) Giá — đ/g, phí/khay, hệ số bù, giá sàn + preview giá hiện tại;
-// (c) Giới hạn in — wallT/floorT/outerR/pocketR… + luật engine outerR≤pocketR+
-//     (2+√2)·wallT−0.01 (vượt → lỗi đỏ, KHÔNG áp).
-// Nút: Về mặc định (confirm) · Xuất JSON · Nhập JSON (parse fail → lỗi inline).
+// (b) Giá — đ/g, PHÍ MỖI MẢNH IN, hệ số bù, giá sàn + preview giá hiện tại;
+// (c) Tạo hình (TrayStyle) — wallT/floorT/outerR/rimRound/floorFillet/base…;
+// (d) Giới hạn — maxPieceMm/minPocketMm/trayGapMm/lipH/lipClearMm.
+// VALIDATION luật engine TRƯỚC khi áp (lỗi đỏ, KHÔNG áp):
+//   wallT ≥ 2·rimRound + 0.4 · outerR − wallT ≥ 1 · floorFillet < minPocket/2
+//   · maxPieceMm ≤ 168.
+// Nút: Về mặc định (confirm) · Xuất JSON · Nhập JSON schema v2 (fail → lỗi đỏ).
 // =============================================================================
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useIsMobile } from './hooks';
@@ -15,9 +18,10 @@ import {
   DEFAULT_KHAY_CATALOG,
   colorEnabled,
   type KhayCatalog,
-  type KhayLimits,
-  type KhayPricing,
+  type KhayLimits2,
+  type KhayPricing2,
 } from '@/engine/catalog';
+import type { TrayStyle } from '@/engine/geometry/solid2-types';
 import { PLA_MATTE_PALETTE } from '@/engine/palette';
 
 const CloseIcon = (
@@ -32,22 +36,31 @@ function formatPrice(v: number): string {
   return `${Math.round(v).toLocaleString('vi-VN')} ₫`;
 }
 
-/** Luật hình học engine: bo ngoài không được vượt bo lòng ô + (2+√2)·vách. */
-function limitsRuleError(l: KhayLimits): string | null {
-  const maxOuter = l.pocketR + (2 + Math.SQRT2) * l.wallT - 0.01;
-  if (l.outerR > maxOuter + 1e-9) {
-    return `Bo ngoài tối đa ${maxOuter.toFixed(2)} mm (= bo lòng ô + (2+√2)·vách − 0.01). Giảm bo ngoài hoặc tăng bo lòng ô / vách.`;
+/** Luật engine v2 (solid2 + layout) — trả message lỗi đầu tiên vi phạm. */
+function ruleError(style: TrayStyle, limits: KhayLimits2): string | null {
+  if (style.wallT < 2 * style.rimRound + 0.4 - 1e-9) {
+    return `Vách (wallT) phải ≥ 2×bo miệng + 0.4 = ${(2 * style.rimRound + 0.4).toFixed(1)}mm — tăng vách hoặc giảm bo miệng.`;
+  }
+  if (style.outerR - style.wallT < 1 - 1e-9) {
+    return `Bo ngoài (outerR) phải ≥ vách + 1 = ${(style.wallT + 1).toFixed(1)}mm — tăng bo ngoài hoặc giảm vách.`;
+  }
+  if (style.floorFillet >= limits.minPocketMm / 2 - 1e-9) {
+    return `Vát đáy lòng (floorFillet) phải < lòng nhỏ nhất / 2 = ${(limits.minPocketMm / 2).toFixed(1)}mm.`;
+  }
+  if (limits.maxPieceMm > 168 + 1e-9) {
+    return 'Mảnh in tối đa 168mm (bàn in 180 − lề) — không tăng thêm được.';
   }
   return null;
 }
 
-/** Merge JSON nhập (partial) lên DEFAULT — field thiếu lấy mặc định (như store). */
+/** Merge JSON nhập (partial, schema v2) lên DEFAULT — field thiếu lấy mặc định. */
 function mergeImported(p: Partial<KhayCatalog>): KhayCatalog {
   const d = DEFAULT_KHAY_CATALOG;
-  const pl = (p.limits ?? {}) as Partial<KhayLimits>;
+  const pl = (p.limits ?? {}) as Partial<KhayLimits2>;
   return {
-    version: 1,
+    version: 2,
     pricing: { ...d.pricing, ...(p.pricing ?? {}) },
+    style: { ...d.style, ...(p.style ?? {}) },
     limits: {
       ...d.limits,
       ...pl,
@@ -190,6 +203,21 @@ function Toggle({ on, title, onChange }: { on: boolean; title: string; onChange:
   );
 }
 
+/** Lỗi đỏ inline (luật tạo hình / JSON). */
+function RuleErrorBox({ msg }: { msg: string }) {
+  return (
+    <p
+      className="mt-2 rounded-[9px] px-3 py-2 text-[11.5px] leading-relaxed"
+      style={{ background: '#fbeae9', color: RED }}
+      role="alert"
+    >
+      {msg}
+    </p>
+  );
+}
+
+type GroupKey = 'colors' | 'pricing' | 'shape' | 'limits';
+
 export function SettingsPanel({
   sheet,
   open,
@@ -200,12 +228,13 @@ export function SettingsPanel({
   onClose: () => void;
 }) {
   const isMobile = useIsMobile();
-  const [opened, setOpened] = useState<Record<'colors' | 'pricing' | 'limits', boolean>>({
+  const [opened, setOpened] = useState<Record<GroupKey, boolean>>({
     colors: true,
     pricing: false,
+    shape: false,
     limits: false,
   });
-  const [limitsError, setLimitsError] = useState<string | null>(null);
+  const [ruleErr, setRuleErr] = useState<string | null>(null);
   const [jsonError, setJsonError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -222,10 +251,9 @@ export function SettingsPanel({
   if (!open) return null;
 
   const cat = sheet.catalog;
-  const toggleGroup = (k: 'colors' | 'pricing' | 'limits') =>
-    setOpened((o) => ({ ...o, [k]: !o[k] }));
+  const toggleGroup = (k: GroupKey) => setOpened((o) => ({ ...o, [k]: !o[k] }));
 
-  // ── commit từng nhánh catalog (áp NGAY) ────────────────────────────────────
+  // ── commit từng nhánh catalog (áp NGAY, validate luật engine trước) ────────
   const toggleColor = (id: string) => {
     const nowOn = colorEnabled(cat, id);
     const rest = cat.colors.filter((c) => c.id !== id);
@@ -233,12 +261,19 @@ export function SettingsPanel({
     const colors = nowOn ? [...rest, { id, enabled: false }] : rest;
     sheet.setCatalog({ ...cat, colors });
   };
-  const commitPricing = (patch: Partial<KhayPricing>) =>
+  const commitPricing = (patch: Partial<KhayPricing2>) =>
     sheet.setCatalog({ ...cat, pricing: { ...cat.pricing, ...patch } });
-  const commitLimits = (patch: Partial<KhayLimits>) => {
+  const commitStyle = (patch: Partial<TrayStyle>) => {
+    const style = { ...cat.style, ...patch };
+    const err = ruleError(style, cat.limits);
+    setRuleErr(err);
+    if (err) return; // vi phạm luật engine → KHÔNG áp
+    sheet.setCatalog({ ...cat, style });
+  };
+  const commitLimits = (patch: Partial<KhayLimits2>) => {
     const limits = { ...cat.limits, ...patch };
-    const err = limitsRuleError(limits);
-    setLimitsError(err);
+    const err = ruleError(cat.style, limits);
+    setRuleErr(err);
     if (err) return; // vi phạm luật engine → KHÔNG áp
     sheet.setCatalog({ ...cat, limits });
   };
@@ -247,7 +282,7 @@ export function SettingsPanel({
   const resetDefaults = () => {
     if (!window.confirm('Đưa toàn bộ cài đặt về mặc định?')) return;
     sheet.setCatalog(DEFAULT_KHAY_CATALOG);
-    setLimitsError(null);
+    setRuleErr(null);
     setJsonError(null);
   };
   const exportJson = () => {
@@ -264,20 +299,25 @@ export function SettingsPanel({
       .then((raw) => {
         try {
           const p = JSON.parse(raw) as Partial<KhayCatalog> | null;
-          if (!p || typeof p !== 'object' || (!p.pricing && !p.limits && !p.colors)) {
-            throw new Error('shape');
+          if (!p || typeof p !== 'object' || p.version !== 2) throw new Error('shape');
+          const merged = mergeImported(p);
+          const err = ruleError(merged.style, merged.limits);
+          if (err) {
+            setJsonError(`Catalog nhập vi phạm luật tạo hình: ${err}`);
+            return;
           }
-          sheet.setCatalog(mergeImported(p));
+          sheet.setCatalog(merged);
           setJsonError(null);
-          setLimitsError(null);
+          setRuleErr(null);
         } catch {
-          setJsonError('File JSON không hợp lệ — cần đúng cấu trúc catalog đã xuất.');
+          setJsonError('File JSON không hợp lệ — cần đúng catalog schema v2 đã xuất.');
         }
       })
       .catch(() => setJsonError('Không đọc được file.'));
   };
 
   const enabledCount = PLA_MATTE_PALETTE.filter((c) => colorEnabled(cat, c.id)).length;
+  const s = cat.style;
   const l = cat.limits;
   const p = cat.pricing;
 
@@ -352,13 +392,13 @@ export function SettingsPanel({
               onCommit={(v) => commitPricing({ pricePerGram: v })}
             />
             <NumField
-              label="Phí cố định mỗi khay"
+              label="Phí mỗi mảnh in"
               unit="đ"
-              value={p.baseFeePerTray}
+              value={p.baseFeePerPiece}
               min={0}
               max={1_000_000}
               step={1000}
-              onCommit={(v) => commitPricing({ baseFeePerTray: v })}
+              onCommit={(v) => commitPricing({ baseFeePerPiece: v })}
             />
             <NumField
               label="Hệ số bù slicer"
@@ -382,51 +422,95 @@ export function SettingsPanel({
               <span className="text-[11px] text-[var(--color-ink-3)]">Cấu hình hiện tại: </span>
               <span className="num text-[12.5px] font-bold">{formatPrice(sheet.price.total)}</span>
               <span className="num text-[11px] text-[var(--color-ink-3)]">
-                {' '}· {sheet.price.trayCount} khay · ~{Math.round(sheet.price.totalGrams)}g
+                {' '}· {sheet.trayCount} khay · {sheet.pieceCount} mảnh · ~{Math.round(sheet.price.totalGrams)}g
               </span>
             </div>
           </Group>
 
-          {/* (c) Giới hạn in */}
-          <Group title="Giới hạn in" open={opened.limits} onToggle={() => toggleGroup('limits')}>
+          {/* (c) Tạo hình */}
+          <Group title="Tạo hình" open={opened.shape} onToggle={() => toggleGroup('shape')}>
+            <p className="mb-1 text-[11.5px] leading-relaxed text-[var(--color-ink-3)]">
+              Hình khối khay (áp cho MỌI khay) — đổi xong mesh 3D dựng lại ngay.
+            </p>
             <NumField
               label="Dày vách (wallT)"
               unit="mm"
-              value={l.wallT}
-              min={0.8}
-              max={3.2}
-              step={0.1}
-              onCommit={(v) => commitLimits({ wallT: v })}
+              value={s.wallT}
+              min={2}
+              max={6}
+              step={0.5}
+              onCommit={(v) => commitStyle({ wallT: v })}
             />
             <NumField
               label="Dày đáy (floorT)"
               unit="mm"
-              value={l.floorT}
-              min={0.8}
-              max={4}
+              value={s.floorT}
+              min={2}
+              max={5}
+              step={0.5}
+              onCommit={(v) => commitStyle({ floorT: v })}
+            />
+            <NumField
+              label="Bo góc ngoài (outerR)"
+              unit="mm"
+              value={s.outerR}
+              min={4}
+              max={20}
+              step={0.5}
+              onCommit={(v) => commitStyle({ outerR: v })}
+            />
+            <NumField
+              label="Bo tròn miệng (rimRound)"
+              unit="mm"
+              value={s.rimRound}
+              min={0}
+              max={2}
               step={0.1}
-              onCommit={(v) => commitLimits({ floorT: v })}
+              onCommit={(v) => commitStyle({ rimRound: v })}
             />
             <NumField
-              label="Bo ngoài (outerR)"
+              label="Vát đáy lòng (floorFillet)"
               unit="mm"
-              value={l.outerR}
+              value={s.floorFillet}
               min={0}
-              max={20}
+              max={6}
               step={0.5}
-              onCommit={(v) => commitLimits({ outerR: v })}
+              onCommit={(v) => commitStyle({ floorFillet: v })}
             />
             <NumField
-              label="Bo lòng ô (pocketR)"
+              label="Chân đế thụt (baseInset)"
               unit="mm"
-              value={l.pocketR}
+              value={s.baseInset}
               min={0}
-              max={20}
+              max={4}
               step={0.5}
-              onCommit={(v) => commitLimits({ pocketR: v })}
+              onCommit={(v) => commitStyle({ baseInset: v })}
             />
             <NumField
-              label="Lòng ô nhỏ nhất"
+              label="Cao chân đế (baseH)"
+              unit="mm"
+              value={s.baseH}
+              min={0}
+              max={4}
+              step={0.5}
+              onCommit={(v) => commitStyle({ baseH: v })}
+            />
+            {ruleErr && <RuleErrorBox msg={ruleErr} />}
+          </Group>
+
+          {/* (d) Giới hạn */}
+          <Group title="Giới hạn" open={opened.limits} onToggle={() => toggleGroup('limits')}>
+            <NumField
+              label="Mảnh in tối đa (maxPieceMm)"
+              unit="mm"
+              value={l.maxPieceMm}
+              min={60}
+              max={168}
+              step={1}
+              onCommit={(v) => commitLimits({ maxPieceMm: v })}
+            />
+            <NumField
+              label="Lòng khay nhỏ nhất"
               unit="mm"
               value={l.minPocketMm}
               min={10}
@@ -435,13 +519,13 @@ export function SettingsPanel({
               onCommit={(v) => commitLimits({ minPocketMm: v })}
             />
             <NumField
-              label="Cạnh khay tối đa"
+              label="Khe giữa 2 khay (trayGap)"
               unit="mm"
-              value={l.maxTrayMm}
-              min={60}
-              max={176}
-              step={1}
-              onCommit={(v) => commitLimits({ maxTrayMm: v })}
+              value={l.trayGapMm}
+              min={0}
+              max={3}
+              step={0.1}
+              onCommit={(v) => commitLimits({ trayGapMm: v })}
             />
             <NumField
               label="Chân cắm xếp chồng (lipH)"
@@ -461,11 +545,7 @@ export function SettingsPanel({
               step={0.05}
               onCommit={(v) => commitLimits({ lipClearMm: v })}
             />
-            {limitsError && (
-              <p className="mt-2 rounded-[9px] px-3 py-2 text-[11.5px] leading-relaxed" style={{ background: '#fbeae9', color: RED }}>
-                {limitsError}
-              </p>
-            )}
+            {ruleErr && <RuleErrorBox msg={ruleErr} />}
           </Group>
 
           {/* Footer: reset + JSON */}
@@ -473,10 +553,10 @@ export function SettingsPanel({
             <Btn onClick={resetDefaults} title="Đưa mọi cài đặt về mặc định (có xác nhận)">
               Về mặc định
             </Btn>
-            <Btn onClick={exportJson} title="Tải catalog hiện tại xuống dạng JSON">
+            <Btn onClick={exportJson} title="Tải catalog hiện tại xuống dạng JSON (schema v2)">
               Xuất JSON
             </Btn>
-            <Btn onClick={() => fileRef.current?.click()} title="Nạp catalog từ file JSON đã xuất">
+            <Btn onClick={() => fileRef.current?.click()} title="Nạp catalog từ file JSON đã xuất (schema v2)">
               Nhập JSON
             </Btn>
             <input

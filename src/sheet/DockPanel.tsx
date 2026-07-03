@@ -3,15 +3,15 @@
 // ngan-excel-demo: không nằm trong container cuộn ngang nên không bị cắt).
 //   · desktop: thẻ giấy nổi ngay trên dock, giữa màn hình
 //   · mobile : bottom sheet trượt lên (tay nắm + ✕), che dock
-// Nội dung 4 tab:
-//   'drawer' — W/D/H lòng ngăn kéo (slider rAF + nhập số) + độ vừa + info tiling
+// Nội dung 4 tab (model V2 — MỘT lưới chung, mỗi block = 1 khay rời):
+//   'drawer' — W/D/H lòng ngăn kéo (slider rAF + nhập số) + độ vừa + info lưới
 //   'levels' — nấc cao từng tầng (chặn nấc làm Σ vượt lòng)
-//   'grid'   — hàng/cột khay đang chọn + gộp/tách ô
+//   'grid'   — Hàng/Cột LƯỚI CHUNG + khối "khay đang chọn" + gộp/tách
 //   'color'  — màu PLA Matte cho khay đang chọn / tất cả khay
 // =============================================================================
 import { useEffect, type ReactNode } from 'react';
 import { colorEnabled, type FitId } from '@/engine/catalog';
-import { maxAxisCells } from '@/engine/layout';
+import { gridPitch, maxAxisCells } from '@/engine/layout';
 import { findColor, PLA_MATTE_PALETTE } from '@/engine/palette';
 import { Btn, IconBtn, Segmented } from './bits';
 import { useIsMobile, useRafParam } from './hooks';
@@ -19,14 +19,6 @@ import { IconClose, IconMerge, IconMinus, IconPlus, IconSplit } from './icons';
 import type { KhaySheet } from './useKhaySheet';
 
 export type DockTab = null | 'drawer' | 'levels' | 'grid' | 'color';
-
-/** Khay đang thao tác (grid/color): theo selection, không có thì khay 1 tầng active. */
-export function targetTray(sheet: KhaySheet): { li: number; ti: number } {
-  return {
-    li: sheet.selection?.level ?? sheet.activeLevel,
-    ti: sheet.selection?.tray ?? 0,
-  };
-}
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -47,9 +39,10 @@ const FIT_OPTIONS: { value: FitId; label: string }[] = [
 
 function DrawerContent({ sheet, onOpenGuide }: { sheet: KhaySheet; onOpenGuide: () => void }) {
   const rafSetDrawer = useRafParam(sheet.setDrawer);
-  const { minDrawer, maxDrawer, maxTrayMm, fitClearanceMm } = sheet.catalog.limits;
+  const { minDrawer, maxDrawer, fitClearanceMm } = sheet.catalog.limits;
   const drawer = sheet.layout.drawer;
-  const tiling = sheet.built.tiling;
+  const { rows, cols } = sheet.layout.grid;
+  const { pitchX, pitchY } = gridPitch(sheet.layout, sheet.catalog);
   const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
   const axis = (key: 'w' | 'd' | 'h', label: string) => {
@@ -114,11 +107,15 @@ function DrawerContent({ sheet, onOpenGuide }: { sheet: KhaySheet; onOpenGuide: 
         />
       </Row>
       <p className="text-[11px] leading-relaxed text-[var(--color-ink-3)]">
-        Chia thành{' '}
+        Lưới{' '}
         <b className="num font-bold text-[var(--color-ink-2)]">
-          {tiling.cols}×{tiling.rows}
+          {cols}×{rows}
         </b>{' '}
-        khay (mỗi khay ≤ {maxTrayMm}mm — vừa bàn in).{' '}
+        — mỗi ô ≈{' '}
+        <b className="num font-bold text-[var(--color-ink-2)]">
+          {Math.round(pitchX)}×{Math.round(pitchY)}
+        </b>{' '}
+        mm.{' '}
         <button
           type="button"
           onClick={onOpenGuide}
@@ -196,6 +193,9 @@ function LevelsContent({ sheet }: { sheet: KhaySheet }) {
       <p className="num text-[11px] font-medium text-[var(--color-ink-3)]">
         Σ cao {sumH}mm / lòng {drawerH}mm
       </p>
+      <p className="text-[10.5px] leading-relaxed text-[var(--color-ink-3)]">
+        Khay tầng trên trùng đáy khay dưới sẽ có chân cắm xếp chồng.
+      </p>
     </div>
   );
 }
@@ -241,38 +241,69 @@ function Stepper({
   );
 }
 
+/** Số mảnh in của 1 khay từ cuts: (cắt trục x + 1)·(cắt trục y + 1). */
+function pieceCountOf(cuts: { axis: 'x' | 'y'; at: number }[]): number {
+  const nx = cuts.filter((c) => c.axis === 'x').length + 1;
+  const ny = cuts.filter((c) => c.axis === 'y').length + 1;
+  return nx * ny;
+}
+
 function GridContent({ sheet }: { sheet: KhaySheet }) {
-  const { li, ti } = targetTray(sheet);
-  const tray = sheet.layout.levels[li]?.trays[ti];
-  const tile = sheet.built.tiling.tiles[ti];
-  if (!tray || !tile) {
-    return <p className="text-[12px] text-[var(--color-ink-3)]">Chưa có khay để chỉnh — kiểm tra lại kích thước ngăn kéo.</p>;
-  }
-  const maxR = maxAxisCells(tile.d, sheet.catalog);
-  const maxC = maxAxisCells(tile.w, sheet.catalog);
+  const { layout, catalog } = sheet;
+  const clear = catalog.limits.fitClearanceMm[layout.fit];
+  const maxC = maxAxisCells(layout.drawer.w - 2 * clear, catalog);
+  const maxR = maxAxisCells(layout.drawer.d - 2 * clear, catalog);
+  const { rows, cols } = layout.grid;
+  const t = sheet.selectedTray;
+  const pieceN = t ? pieceCountOf(t.cuts) : 0;
   return (
     <div className="space-y-4">
       <div className="space-y-2.5">
-        <Stepper label="Hàng" value={tray.rows} min={1} max={maxR} onChange={(r) => sheet.setTrayGrid(li, ti, r, tray.cols)} />
-        <Stepper label="Cột" value={tray.cols} min={1} max={maxC} onChange={(c) => sheet.setTrayGrid(li, ti, tray.rows, c)} />
+        <Stepper label="Hàng" value={rows} min={1} max={maxR} onChange={(r) => sheet.setGrid(r, cols)} />
+        <Stepper label="Cột" value={cols} min={1} max={maxC} onChange={(c) => sheet.setGrid(rows, c)} />
         <p className="text-[10.5px] leading-relaxed text-[var(--color-ink-3)]">
-          Đổi hàng/cột sẽ đặt lại các ô đã gộp của khay này.
+          Lưới chung cho cả ngăn kéo — đổi hàng/cột sẽ đặt lại gộp ô ở mọi tầng.
         </p>
       </div>
+
+      {/* Khối thông tin KHAY ĐANG CHỌN */}
+      <div className="rounded-[10px] bg-[var(--color-surface-2)] px-3 py-2.5">
+        <div className="muuto-label mb-1 text-[var(--color-ink-3)]">Khay đang chọn</div>
+        {t ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="num text-[12.5px] font-bold">
+              {t.name} — {Math.round(t.rect.w)}×{Math.round(t.rect.d)} mm
+            </span>
+            {t.cuts.length > 0 && (
+              <span
+                className="num inline-flex shrink-0 rounded-full bg-[var(--color-ink)] px-2 py-0.5 text-[10px] font-semibold text-white"
+                title="Khay vượt cỡ bàn in — tự cắt thành mảnh, ghép mộng đáy, lòng khay vẫn liền mạch"
+              >
+                in {pieceN} mảnh ghép mộng
+              </span>
+            )}
+          </div>
+        ) : (
+          <p className="text-[11.5px] text-[var(--color-ink-3)]">
+            Chạm 1 ô trên mô hình 3D để chọn khay.
+          </p>
+        )}
+      </div>
+
       <div className="flex flex-wrap gap-2">
         <Btn
-          title={sheet.canMergeSelection ? 'Gộp vùng ô đang chọn thành 1 ngăn lớn' : 'Chọn từ 2 ô trở lên (cùng khay) để gộp'}
+          title={sheet.canMergeSelection ? 'Gộp vùng ô đang chọn thành 1 khay rời' : 'Kéo chọn từ 2 ô trở lên để gộp'}
           disabled={!sheet.canMergeSelection}
           onClick={sheet.mergeSelection}
         >
           <IconMerge /> Gộp ô đã chọn
         </Btn>
         <Btn
-          title={sheet.canUnmergeSelection ? 'Tách ô gộp về các ô nhỏ như cũ' : 'Chọn 1 ô đã gộp để tách'}
+          title={sheet.canUnmergeSelection ? 'Tách khay gộp về các ô nhỏ như cũ' : 'Chọn 1 khay đã gộp để tách'}
           disabled={!sheet.canUnmergeSelection}
           onClick={sheet.unmergeSelection}
         >
-          <IconSplit /> Tách ô
+          <IconSplit /> Tách khay này
         </Btn>
       </div>
       <p className="text-[11px] leading-relaxed text-[var(--color-ink-3)]">
@@ -285,13 +316,13 @@ function GridContent({ sheet }: { sheet: KhaySheet }) {
 // ── Panel Màu ────────────────────────────────────────────────────────────────
 
 function ColorContent({ sheet }: { sheet: KhaySheet }) {
-  const { li, ti } = targetTray(sheet);
-  const tray = sheet.layout.levels[li]?.trays[ti];
+  const t = sheet.selectedTray;
   const colors = PLA_MATTE_PALETTE.filter((c) => colorEnabled(sheet.catalog, c.id));
-  if (!tray) {
+  const currentId = t?.color ?? sheet.built.trays[0]?.color;
+  if (!currentId) {
     return <p className="text-[12px] text-[var(--color-ink-3)]">Chưa có khay để đổi màu.</p>;
   }
-  const current = findColor(tray.color);
+  const current = findColor(currentId);
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
@@ -301,17 +332,24 @@ function ColorContent({ sheet }: { sheet: KhaySheet }) {
           style={{ background: current.hex, boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.18)' }}
         />
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{current.nameVi}</span>
-        <span className="shrink-0 text-[10.5px] text-[var(--color-ink-3)]">PLA Matte · {current.name}</span>
+        <span className="shrink-0 text-[10.5px] text-[var(--color-ink-3)]">
+          {t ? `đang áp cho ${t.name}` : 'PLA Matte'}
+        </span>
       </div>
+      {!t && (
+        <p className="text-[10.5px] leading-relaxed text-[var(--color-ink-3)]">
+          Chưa chọn khay — bấm màu sẽ áp cho TẤT CẢ khay. Chạm 1 ô trên mô hình để đổi màu riêng.
+        </p>
+      )}
       <div className="grid grid-cols-5 gap-x-1.5 gap-y-2">
         {colors.map((c) => {
-          const selected = c.id === tray.color;
+          const selected = c.id === currentId;
           return (
             <button
               key={c.id}
               type="button"
-              title={`${c.nameVi} (${c.name})`}
-              onClick={() => sheet.setTrayColor(li, ti, c.id)}
+              title={t ? `${c.nameVi} (${c.name}) — áp cho ${t.name}` : `${c.nameVi} (${c.name}) — áp cho tất cả khay`}
+              onClick={() => (t ? sheet.setBlockColor(c.id) : sheet.setAllTrayColors(c.id))}
               className="group flex min-w-0 flex-col items-center gap-1"
             >
               <span
@@ -337,7 +375,7 @@ function ColorContent({ sheet }: { sheet: KhaySheet }) {
       </div>
       <Btn
         title={`Đổi tất cả khay (mọi tầng) sang màu ${current.nameVi}`}
-        onClick={() => sheet.setAllTrayColors(tray.color)}
+        onClick={() => sheet.setAllTrayColors(currentId)}
         className="w-full"
       >
         Áp «{current.nameVi}» cho tất cả khay
@@ -351,7 +389,7 @@ function ColorContent({ sheet }: { sheet: KhaySheet }) {
 const TITLES: Record<Exclude<DockTab, null>, string> = {
   drawer: 'Ngăn kéo',
   levels: 'Tầng',
-  grid: 'Lưới ngăn',
+  grid: 'Lưới khay',
   color: 'Màu khay',
 };
 
@@ -389,8 +427,9 @@ export function DockPanel({
       <ColorContent sheet={sheet} />
     );
   // Subtitle ngữ cảnh: grid/color thao tác trên KHAY nào (audit ngan: echo đích).
-  const { li, ti } = targetTray(sheet);
-  const subtitle = tab === 'grid' || tab === 'color' ? `Khay ${ti + 1} · Tầng ${li + 1}` : null;
+  const t = sheet.selectedTray;
+  const subtitle =
+    (tab === 'grid' || tab === 'color') && t ? `${t.name} · Tầng ${t.levelIdx + 1}` : null;
 
   const header = (closeSize: string) => (
     <div className="mb-3 flex items-center justify-between">

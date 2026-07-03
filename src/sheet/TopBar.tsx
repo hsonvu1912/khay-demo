@@ -126,15 +126,26 @@ export function TopBar({
           title="Giá tạm tính — bấm xem chi tiết"
           className="flex shrink-0 flex-col items-end rounded-[9px] px-1.5 py-0.5 leading-none transition-colors hover:bg-[var(--color-surface-2)]"
         >
-          <span
-            className={`num whitespace-nowrap font-bold tracking-tight ${
-              isMobile ? 'text-[14.5px]' : 'text-[18px]'
-            }`}
-          >
-            {formatPrice(shown)}
+          <span className="flex items-center gap-1.5">
+            {/* Chấm nhỏ nhấp nháy khi CSG đang dựng lại mesh nền. */}
+            {sheet.building && (
+              <span
+                className="inline-block h-[7px] w-[7px] animate-pulse rounded-full bg-[var(--color-ink-3)]"
+                title="Đang dựng hình 3D…"
+                aria-label="Đang dựng hình 3D"
+              />
+            )}
+            <span
+              className={`num whitespace-nowrap font-bold tracking-tight ${
+                isMobile ? 'text-[14.5px]' : 'text-[18px]'
+              }`}
+            >
+              {formatPrice(shown)}
+            </span>
           </span>
           <span className="mt-[3px] whitespace-nowrap text-[10.5px] text-[var(--color-ink-3)]">
-            ~{Math.round(sheet.price.totalGrams)}g · {sheet.price.trayCount} khay
+            ~{Math.round(sheet.price.totalGrams)}g · {sheet.trayCount} khay
+            {sheet.pieceCount > sheet.trayCount ? ` · ${sheet.pieceCount} mảnh` : ''}
           </span>
         </button>
         {isMobile ? (

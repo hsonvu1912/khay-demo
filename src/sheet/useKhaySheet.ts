@@ -1,60 +1,73 @@
 // =============================================================================
-// useKhaySheet — hook HEADLESS trung tâm của configurator khay: giữ layout +
-// catalog + selection + undo, gọi pure ops của @/engine/layout, memo hoá
-// build/mesh/price. MỌI component UI chỉ nhận { sheet } từ đây — không tự đụng
-// KhayLayout. Undo = snapshot layout (cap 50, chỉ push khi layout ĐỔI nội dung).
+// useKhaySheet V2 — hook HEADLESS trung tâm của configurator khay: giữ layout +
+// catalog + selection + undo, gọi pure ops của @/engine/layout, memo hoá build.
+// V2: MỘT lưới chung toàn ngăn kéo, mỗi block = 1 KHAY RỜI có màu riêng;
+// selection là Ô LƯỚI (không còn tray index). Mesh giờ ASYNC (CSG manifold-3d
+// WASM): pipeline build nền + cache theo spec+cuts, GIỮ pieces cũ trong lúc
+// build lại (không nháy trắng). MỌI component UI chỉ nhận { sheet } từ đây.
 // =============================================================================
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as L from '@/engine/layout';
-import type { KhayLayout, PlacedTray } from '@/engine/layout';
+import type { Block2, KhayLayout, PlacedTray2 } from '@/engine/layout';
 import type { FitId, KhayCatalog } from '@/engine/catalog';
 import { DEFAULT_KHAY_CATALOG } from '@/engine/catalog';
-import type { Tiling } from '@/engine/tiling';
-import type { TriMesh } from '@/engine/geometry/types';
-import { buildTraySolid } from '@/engine/geometry/tray-solid';
+import type { TrayPiece } from '@/engine/geometry/solid2-types';
+import { buildTrayPieces } from '@/engine/geometry/solid2';
 import { computeKhayPrice, type KhayPrice } from '@/engine/pricing';
 import { loadCatalog, saveCatalog } from './store';
 
-/** 1 ô trong 1 khay của 1 tầng. */
-export interface CellRef {
+/** Vùng chọn Ô LƯỚI chữ nhật trong 1 tầng — anchor = (r0,c0); chuẩn hoá min/max khi ĐỌC. */
+export interface CellSelection2 {
   level: number;
-  tray: number;
-  r: number;
-  c: number;
-}
-
-/** Vùng chọn chữ nhật trong 1 khay — anchor = (r0,c0); chuẩn hoá min/max khi ĐỌC. */
-export interface CellSelection {
-  level: number;
-  tray: number;
   r0: number;
   c0: number;
   r1: number;
   c1: number;
 }
 
+/** 1 mảnh in đã dựng CSG, kèm khay chứa nó. */
+export interface PieceEntry {
+  /** `${levelIdx}:${block.r},${block.c}:${piece.name}` — ổn định theo vị trí khay. */
+  key: string;
+  tray: PlacedTray2;
+  piece: TrayPiece;
+}
+
 export interface KhaySheet {
   layout: KhayLayout;
   catalog: KhayCatalog;
-  built: { trays: PlacedTray[]; tiling: Tiling; warnings: string[] };
+  /** Sync: spec + cuts từng khay (KHÔNG mesh) — mesh dựng async ở `pieces`. */
+  built: { trays: PlacedTray2[]; warnings: string[] };
   buildError: string | null;
+  /** Kết quả CSG async (cache theo spec+cuts); giữ bản cũ khi đang build lại. */
+  pieces: PieceEntry[];
+  /** CSG đang chạy nền. */
+  building: boolean;
+  /** Giá từ pieces hiện có (computeKhayPrice). */
   price: KhayPrice;
-  /** key = `${levelIdx}-${trayIdx}` — mesh WYSIWYG (cùng builder với STL). */
-  meshes: Map<string, TriMesh>;
+  trayCount: number;
+  pieceCount: number;
   activeLevel: number;
-  selection: CellSelection | null;
+  selection: CellSelection2 | null;
+  /** Block/tray chứa anchor selection (derive — null khi chưa chọn/built lệch). */
+  selectedBlock: Block2 | null;
+  selectedTray: PlacedTray2 | null;
   setActiveLevel(i: number): void;
-  select(sel: CellSelection | null): void;
-  extendSelection(to: CellRef): void;
+  select(sel: CellSelection2 | null): void;
+  extendSelection(to: { level: number; r: number; c: number }): void;
   setDrawer(dims: { w: number; d: number; h: number }): void;
   setFit(f: FitId): void;
+  /** Đổi lưới chung — reset partition MỌI tầng về 1×1 (giữ màu chủ đạo). */
+  setGrid(rows: number, cols: number): void;
   setLevelHeight(li: number, h: number): void;
   addLevel(): void;
   removeLevel(li: number): void;
-  setTrayGrid(li: number, ti: number, rows: number, cols: number): void;
+  /** Vùng chọn → 1 khay (giữ màu block anchor). */
   mergeSelection(): void;
+  /** Block tại anchor nổ về các ô 1×1. */
   unmergeSelection(): void;
-  setTrayColor(li: number, ti: number, colorId: string): void;
+  /** Đổi màu KHAY chứa anchor selection. */
+  setBlockColor(colorId: string): void;
   setAllTrayColors(colorId: string): void;
   setCatalog(c: KhayCatalog): void;
   resetLayout(): void;
@@ -64,11 +77,11 @@ export interface KhaySheet {
   canUnmergeSelection: boolean;
 }
 
-type Built = { trays: PlacedTray[]; tiling: Tiling; warnings: string[] };
+type Built = { trays: PlacedTray2[]; warnings: string[] };
 
 const DEFAULT_DRAWER = { w: 400, d: 300, h: 120 };
 const UNDO_CAP = 50;
-const MESH_CACHE_CAP = 400;
+const PIECE_CACHE_CAP = 300;
 
 /** Built an toàn tuyệt đối (default layout × default catalog) — không thể fail. */
 function safeFallbackBuilt(): Built {
@@ -76,6 +89,11 @@ function safeFallbackBuilt(): Built {
     L.defaultLayout(DEFAULT_DRAWER, 'chuan', DEFAULT_KHAY_CATALOG),
     DEFAULT_KHAY_CATALOG,
   );
+}
+
+/** Khoá cache CSG: spec + cuts quyết định trọn vẹn hình mảnh. */
+function trayCacheKey(t: PlacedTray2): string {
+  return JSON.stringify(t.spec) + '|' + JSON.stringify(t.cuts);
 }
 
 export function useKhaySheet(): KhaySheet {
@@ -136,31 +154,29 @@ export function useKhaySheet(): KhaySheet {
   }, [activeLevelState, activeLevel]);
   const setActiveLevel = useCallback((i: number) => setActiveLevelState(i), []);
 
-  // ── selection: tự về null khi out-of-range sau khi layout đổi ─────────────
-  const [selectionState, setSelectionState] = useState<CellSelection | null>(null);
+  // ── selection: Ô LƯỚI toàn ngăn kéo; tự về null khi out-of-range ──────────
+  const [selectionState, setSelectionState] = useState<CellSelection2 | null>(null);
   const selection = useMemo(() => {
     const s = selectionState;
     if (!s) return null;
-    const tray = layout.levels[s.level]?.trays[s.tray];
-    if (!tray) return null;
-    const ok = (r: number, c: number) => r >= 0 && r < tray.rows && c >= 0 && c < tray.cols;
+    if (s.level < 0 || s.level >= layout.levels.length) return null;
+    const { rows, cols } = layout.grid;
+    const ok = (r: number, c: number) => r >= 0 && r < rows && c >= 0 && c < cols;
     return ok(s.r0, s.c0) && ok(s.r1, s.c1) ? s : null;
   }, [selectionState, layout]);
   useEffect(() => {
     if (selectionState && !selection) setSelectionState(null);
   }, [selectionState, selection]);
 
-  const select = useCallback((s: CellSelection | null) => setSelectionState(s), []);
-  const extendSelection = useCallback((to: CellRef) => {
-    // Giữ anchor (r0,c0), chỉ mở rộng trong CÙNG level+tray.
+  const select = useCallback((s: CellSelection2 | null) => setSelectionState(s), []);
+  const extendSelection = useCallback((to: { level: number; r: number; c: number }) => {
+    // Giữ anchor (r0,c0), mở rộng TỰ DO trong lưới — chỉ ràng CÙNG tầng.
     setSelectionState((prev) =>
-      prev && prev.level === to.level && prev.tray === to.tray
-        ? { ...prev, r1: to.r, c1: to.c }
-        : prev,
+      prev && prev.level === to.level ? { ...prev, r1: to.r, c1: to.c } : prev,
     );
   }, []);
 
-  // ── build (try/catch → giữ built tốt cuối + buildError) ───────────────────
+  // ── build sync (spec + cuts): try/catch → giữ built tốt cuối + buildError ─
   const buildRes = useMemo(() => {
     try {
       return { built: L.buildAllTrays(layout, catalog) as Built, error: null as string | null };
@@ -173,54 +189,110 @@ export function useKhaySheet(): KhaySheet {
   const built = buildRes.built ?? lastGoodRef.current ?? (lastGoodRef.current = safeFallbackBuilt());
   const buildError = buildRes.error;
 
-  // ── meshes: cache theo JSON(spec), LRU prune >400 entry ────────────────────
-  const meshCacheRef = useRef(new Map<string, TriMesh>());
-  const meshes = useMemo(() => {
-    const cache = meshCacheRef.current;
-    const out = new Map<string, TriMesh>();
+  // ── pieces pipeline: CSG async nền + cache theo spec+cuts ─────────────────
+  // Giữ pieces CŨ trong lúc build lại — preview không nháy trắng.
+  const pieceCacheRef = useRef(new Map<string, TrayPiece[]>());
+  const [pieces, setPieces] = useState<PieceEntry[]>([]);
+  const [building, setBuilding] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const cache = pieceCacheRef.current;
+    // Refresh vị trí LRU cho các khay đang dùng (Map giữ insertion order) —
+    // prune sau đó không bao giờ đụng entry của built hiện tại.
     for (const t of built.trays) {
-      const specKey = JSON.stringify(t.spec);
-      let m = cache.get(specKey);
-      if (m) {
-        cache.delete(specKey); // refresh vị trí LRU (Map giữ insertion order)
-        cache.set(specKey, m);
-      } else {
-        try {
-          m = buildTraySolid(t.spec);
-        } catch {
-          continue; // spec lỗi hiếm — bỏ mesh khay này, không crash scene
-        }
-        cache.set(specKey, m);
+      const k = trayCacheKey(t);
+      const v = cache.get(k);
+      if (v) {
+        cache.delete(k);
+        cache.set(k, v);
       }
-      out.set(`${t.levelIdx}-${t.trayIdx}`, m);
     }
-    while (cache.size > MESH_CACHE_CAP) {
-      const oldest = cache.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      cache.delete(oldest);
+    const assemble = (): PieceEntry[] => {
+      const out: PieceEntry[] = [];
+      for (const t of built.trays) {
+        const ps = cache.get(trayCacheKey(t));
+        if (!ps) continue; // khay build fail hiếm — bỏ, không crash scene
+        for (const p of ps) {
+          out.push({ key: `${t.levelIdx}:${t.block.r},${t.block.c}:${p.name}`, tray: t, piece: p });
+        }
+      }
+      return out;
+    };
+    const missing = built.trays.filter((t) => !cache.has(trayCacheKey(t)));
+    if (missing.length === 0) {
+      setPieces(assemble());
+      setBuilding(false);
+      return;
     }
-    return out;
+    setBuilding(true);
+    void (async () => {
+      await Promise.all(
+        missing.map(async (t) => {
+          try {
+            cache.set(trayCacheKey(t), await buildTrayPieces(t.spec, t.cuts));
+          } catch {
+            /* spec lỗi hiếm — khay này không có mảnh, các khay khác vẫn hiện */
+          }
+        }),
+      );
+      if (cancelled) return; // built đã đổi giữa chừng — effect mới lo tiếp
+      while (cache.size > PIECE_CACHE_CAP) {
+        const oldest = cache.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        cache.delete(oldest);
+      }
+      setPieces(assemble());
+      setBuilding(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [built]);
 
-  // ── price: luôn tính trên built TỐT (khi lỗi vẫn hiện giá cấu hình cuối) ──
-  const price = useMemo(() => computeKhayPrice(built.trays, catalog), [built, catalog]);
+  // ── price: từ pieces hiện có (mảnh CSG thật → thể tích thật) ──────────────
+  const price = useMemo(
+    () =>
+      computeKhayPrice(
+        pieces.map((pe) => ({
+          name: pe.piece.name,
+          color: pe.tray.color,
+          volumeMm3: pe.piece.volumeMm3,
+        })),
+        catalog,
+      ),
+    [pieces, catalog],
+  );
+
+  // ── derive block/tray chứa anchor selection ────────────────────────────────
+  const selectedBlock = useMemo<Block2 | null>(() => {
+    if (!selection) return null;
+    const lv = layout.levels[selection.level];
+    if (!lv) return null;
+    const blocks = L.decodeBlocks2(lv.blocks, layout.grid.rows, layout.grid.cols);
+    return L.blockAt(blocks, selection.r0, selection.c0) ?? null;
+  }, [selection, layout]);
+  const selectedTray = useMemo<PlacedTray2 | null>(() => {
+    if (!selection || !selectedBlock) return null;
+    return (
+      built.trays.find(
+        (t) =>
+          t.levelIdx === selection.level &&
+          t.block.r === selectedBlock.r &&
+          t.block.c === selectedBlock.c,
+      ) ?? null
+    );
+  }, [selection, selectedBlock, built]);
 
   // ── eligibility cho merge/unmerge ──────────────────────────────────────────
   const canMergeSelection = useMemo(() => {
     if (!selection) return false;
     return selection.r0 !== selection.r1 || selection.c0 !== selection.c1;
   }, [selection]);
-  const canUnmergeSelection = useMemo(() => {
-    if (!selection) return false;
-    const tray = layout.levels[selection.level]?.trays[selection.tray];
-    if (!tray) return false;
-    const b = L.blockAt(
-      L.decodeBlocks(tray.blocks, tray.rows, tray.cols),
-      selection.r0,
-      selection.c0,
-    );
-    return !!b && (b.rs > 1 || b.cs > 1);
-  }, [selection, layout]);
+  const canUnmergeSelection = useMemo(
+    () => !!selectedBlock && (selectedBlock.rs > 1 || selectedBlock.cs > 1),
+    [selectedBlock],
+  );
 
   // ── ops layout (wrap pure fn engine) ───────────────────────────────────────
   const setDrawer = useCallback(
@@ -238,6 +310,10 @@ export function useKhaySheet(): KhaySheet {
     [apply],
   );
   const setFit = useCallback((f: FitId) => apply((l, c) => L.setFit(l, f, c)), [apply]);
+  const setGrid = useCallback(
+    (rows: number, cols: number) => apply((l, c) => L.setGrid(l, rows, cols, c)),
+    [apply],
+  );
   const setLevelHeight = useCallback(
     (li: number, h: number) => apply((l, c) => L.setLevelHeight(l, li, h, c)),
     [apply],
@@ -247,39 +323,31 @@ export function useKhaySheet(): KhaySheet {
     (li: number) => apply((l, c) => L.removeLevel(l, li, c)),
     [apply],
   );
-  const setTrayGrid = useCallback(
-    (li: number, ti: number, rows: number, cols: number) =>
-      apply((l, c) => L.setTrayGrid(l, li, ti, rows, cols, c)),
-    [apply],
-  );
   const mergeSelection = useCallback(() => {
     const s = selection;
     if (!s) return;
-    apply((l) => L.mergeRect(l, s.level, s.tray, s.r0, s.c0, s.r1, s.c1));
+    // mergeRect tự chuẩn hoá min/max + nở qua block gộp; anchor = (r0,c0).
+    apply((l) => L.mergeRect(l, s.level, s.r0, s.c0, s.r1, s.c1));
   }, [apply, selection]);
   const unmergeSelection = useCallback(() => {
     const s = selection;
     if (!s) return;
-    apply((l) => L.unmergeAt(l, s.level, s.tray, s.r0, s.c0));
+    apply((l) => L.unmergeAt(l, s.level, s.r0, s.c0));
   }, [apply, selection]);
-  const setTrayColor = useCallback(
-    (li: number, ti: number, colorId: string) =>
-      apply((l) => L.setTrayColor(l, li, ti, colorId)),
-    [apply],
+  const setBlockColor = useCallback(
+    (colorId: string) => {
+      const s = selection;
+      if (!s) return;
+      apply((l) => L.setBlockColor(l, s.level, s.r0, s.c0, colorId));
+    },
+    [apply, selection],
   );
   const setAllTrayColors = useCallback(
-    (colorId: string) =>
-      apply((l) => ({
-        ...l,
-        levels: l.levels.map((lv) => ({
-          ...lv,
-          trays: lv.trays.map((t) => ({ ...t, color: colorId })),
-        })),
-      })),
+    (colorId: string) => apply((l) => L.setAllColors(l, colorId)),
     [apply],
   );
 
-  // ── catalog: lưu localStorage + re-normalize layout (limits đổi → tiling đổi)
+  // ── catalog: lưu localStorage + re-normalize layout (limits đổi → lưới đổi)
   const setCatalog = useCallback((c: KhayCatalog) => {
     saveCatalog(c);
     setCatalogState(c);
@@ -311,22 +379,27 @@ export function useKhaySheet(): KhaySheet {
     catalog,
     built,
     buildError,
+    pieces,
+    building,
     price,
-    meshes,
+    trayCount: built.trays.length,
+    pieceCount: pieces.length,
     activeLevel,
     selection,
+    selectedBlock,
+    selectedTray,
     setActiveLevel,
     select,
     extendSelection,
     setDrawer,
     setFit,
+    setGrid,
     setLevelHeight,
     addLevel,
     removeLevel,
-    setTrayGrid,
     mergeSelection,
     unmergeSelection,
-    setTrayColor,
+    setBlockColor,
     setAllTrayColors,
     setCatalog,
     resetLayout,

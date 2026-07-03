@@ -34,6 +34,9 @@ export default defineConfig({
     },
     dedupe: ['three'],
   },
+  // manifold-3d là ESM + WASM (new URL('*.wasm')) — prebundle của vite dev làm
+  // hỏng đường dẫn wasm → loại khỏi optimizeDeps, nạp thẳng từ node_modules.
+  optimizeDeps: { exclude: ['manifold-3d'] },
   server: { port: 5190, strictPort: true },
   appType: 'spa',
 });

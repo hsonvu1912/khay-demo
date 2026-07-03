@@ -2,41 +2,45 @@
 // debugApi — window.__khay cho integrator/critic verify tự động (Playwright).
 // Cập nhật MỖI render bằng useLayoutEffect (sync tại commit) — passive effect
 // bị trình duyệt trì hoãn ở tab hidden làm get() trả state cũ hàng giây.
-// exportProbe: trả tên file STL từng tray, KHÔNG tải file. Chỉ dùng dev/demo.
+// V2: selection là Ô LƯỚI chung (CellSelection2), ops theo hợp đồng KhaySheet
+// v2; exportProbe ASYNC (dựng mảnh CSG thật) → tên file STL từng MẢNH.
 // =============================================================================
 import { useEffect, useLayoutEffect } from 'react';
 import { stlFileName } from '@/engine/export';
+import { buildTrayPieces } from '@/engine/geometry/solid2';
 import type { KhayLayout } from '@/engine/layout';
 import type { FitId, KhayCatalog } from '@/engine/catalog';
-import type { CellSelection, KhaySheet } from './useKhaySheet';
+import type { CellSelection2, KhaySheet } from './useKhaySheet';
 
 export interface KhayDebugApi {
   get: () => {
     layout: KhayLayout;
     activeLevel: number;
-    selection: CellSelection | null;
+    selection: CellSelection2 | null;
     priceTotal: number;
+    trayCount: number;
+    pieceCount: number;
+    building: boolean;
     warnings: string[];
     buildError: string | null;
-    trayCount: number;
   };
   act: {
     setDrawer: (dims: { w: number; d: number; h: number }) => void;
     setFit: (f: FitId) => void;
+    setGrid: (rows: number, cols: number) => void;
     setLevelHeight: (li: number, h: number) => void;
     addLevel: () => void;
     removeLevel: (li: number) => void;
-    setTrayGrid: (li: number, ti: number, rows: number, cols: number) => void;
-    select: (sel: CellSelection | null) => void;
+    select: (sel: CellSelection2 | null) => void;
     mergeSelection: () => void;
     unmergeSelection: () => void;
-    setTrayColor: (li: number, ti: number, colorId: string) => void;
+    setBlockColor: (colorId: string) => void;
     setAllTrayColors: (colorId: string) => void;
     setActiveLevel: (i: number) => void;
     undo: () => void;
     setCatalog: (c: KhayCatalog) => void;
-    /** Tên file stlFileName cho từng tray của cấu hình hiện tại — không tải. */
-    exportProbe: () => string[];
+    /** Dựng mảnh CSG thật từng khay → tên file stlFileName từng MẢNH — không tải. */
+    exportProbe: () => Promise<string[]>;
   };
 }
 
@@ -55,26 +59,35 @@ export function useDebugApi(sheet: KhaySheet): void {
         activeLevel: sheet.activeLevel,
         selection: sheet.selection,
         priceTotal: sheet.price.total,
+        trayCount: sheet.trayCount,
+        pieceCount: sheet.pieceCount,
+        building: sheet.building,
         warnings: sheet.built.warnings,
         buildError: sheet.buildError,
-        trayCount: sheet.built.trays.length,
       }),
       act: {
         setDrawer: sheet.setDrawer,
         setFit: sheet.setFit,
+        setGrid: sheet.setGrid,
         setLevelHeight: sheet.setLevelHeight,
         addLevel: sheet.addLevel,
         removeLevel: sheet.removeLevel,
-        setTrayGrid: sheet.setTrayGrid,
         select: sheet.select,
         mergeSelection: sheet.mergeSelection,
         unmergeSelection: sheet.unmergeSelection,
-        setTrayColor: sheet.setTrayColor,
+        setBlockColor: sheet.setBlockColor,
         setAllTrayColors: sheet.setAllTrayColors,
         setActiveLevel: sheet.setActiveLevel,
         undo: sheet.undo,
         setCatalog: sheet.setCatalog,
-        exportProbe: () => sheet.built.trays.map((t) => stlFileName(t)),
+        exportProbe: async () => {
+          const names: string[] = [];
+          for (const t of sheet.built.trays) {
+            const pieces = await buildTrayPieces(t.spec, t.cuts);
+            for (const p of pieces) names.push(stlFileName(p, t.color));
+          }
+          return names;
+        },
       },
     };
   });

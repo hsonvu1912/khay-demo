@@ -1,16 +1,22 @@
 // =============================================================================
-// Pricing — gram nhựa ước tính từ THỂ TÍCH ANALYTIC (khớp mesh <0.1%, đủ nhanh
-// cho price ticker realtime). Vách/đáy 1.6mm = in đặc nên thể tích hình học ≈
-// nhựa thật; calibrationFactor bù phần lệch slicer (seam, giao perimeter…).
+// Pricing v2 — gram nhựa tính từ THỂ TÍCH MẢNH (manifold volume() do solid2
+// cung cấp qua TrayPiece.volumeMm3 — model layer không import geometry).
+// Vách 4mm in đặc nên thể tích hình học ≈ nhựa thật; calibrationFactor bù
+// phần lệch slicer (seam, giao perimeter…). Phí cố định tính theo MẢNH in.
 // =============================================================================
 import type { KhayCatalog } from './catalog';
-import type { PlacedTray } from './layout';
-import { analyticTrayVolumeMm3 } from './geometry/volume';
 
 /** Khối lượng riêng PLA g/cm³ (Bambu PLA Matte ~1.24–1.26; lấy 1.24 chuẩn PLA). */
 export const PLA_DENSITY = 1.24;
 
-export interface TrayPriceLine {
+/** Đầu vào giá: 1 mảnh in đã có thể tích (từ TrayPiece hoặc ước lượng UI). */
+export interface PricedPiece {
+  name: string;
+  color: string;
+  volumeMm3: number;
+}
+
+export interface PiecePriceLine {
   name: string;
   color: string;
   grams: number;
@@ -18,8 +24,8 @@ export interface TrayPriceLine {
 }
 
 export interface KhayPrice {
-  lines: TrayPriceLine[];
-  trayCount: number;
+  lines: PiecePriceLine[];
+  pieceCount: number;
   totalGrams: number;
   materialCost: number;
   baseFees: number;
@@ -31,21 +37,21 @@ export function trayGrams(volumeMm3: number, catalog: KhayCatalog): number {
   return (volumeMm3 / 1000) * PLA_DENSITY * catalog.pricing.calibrationFactor;
 }
 
-export function computeKhayPrice(trays: PlacedTray[], catalog: KhayCatalog): KhayPrice {
-  const { pricePerGram, baseFeePerTray, minOrder } = catalog.pricing;
-  const lines: TrayPriceLine[] = trays.map((t) => {
-    const grams = trayGrams(analyticTrayVolumeMm3(t.spec), catalog);
+export function computeKhayPrice(pieces: PricedPiece[], catalog: KhayCatalog): KhayPrice {
+  const { pricePerGram, baseFeePerPiece, minOrder } = catalog.pricing;
+  const lines: PiecePriceLine[] = pieces.map((p) => {
+    const grams = trayGrams(p.volumeMm3, catalog);
     return {
-      name: t.spec.name,
-      color: t.color,
+      name: p.name,
+      color: p.color,
       grams,
-      price: grams * pricePerGram + baseFeePerTray,
+      price: grams * pricePerGram + baseFeePerPiece,
     };
   });
   const totalGrams = lines.reduce((s, l) => s + l.grams, 0);
   const materialCost = totalGrams * pricePerGram;
-  const baseFees = baseFeePerTray * lines.length;
+  const baseFees = baseFeePerPiece * lines.length;
   const raw = materialCost + baseFees;
   const total = Math.max(minOrder, Math.round(raw / 1000) * 1000);
-  return { lines, trayCount: lines.length, totalGrams, materialCost, baseFees, total };
+  return { lines, pieceCount: lines.length, totalGrams, materialCost, baseFees, total };
 }

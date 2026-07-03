@@ -8,7 +8,7 @@ import type { ReactNode } from 'react';
 import { findColor } from '@/engine/palette';
 import { useIsMobile } from './hooks';
 import { IconCaret, IconGrid, IconLayer, IconPalette, IconRuler } from './icons';
-import { targetTray, type DockTab } from './DockPanel';
+import type { DockTab } from './DockPanel';
 import type { KhaySheet } from './useKhaySheet';
 
 function DockBtn({
@@ -65,9 +65,9 @@ export function BottomDock({
   const isMobile = useIsMobile();
   const toggle = (t: Exclude<DockTab, null>) => setTab(tab === t ? null : t);
 
-  // Swatch màu khay đang thao tác cho nút "Màu" (cùng đích với panel).
-  const { li, ti } = targetTray(sheet);
-  const trayColor = sheet.layout.levels[li]?.trays[ti]?.color;
+  // Swatch màu khay đang thao tác cho nút "Màu" (cùng đích với panel):
+  // khay đang chọn, không có thì khay đầu tiên.
+  const trayColor = sheet.selectedTray?.color ?? sheet.built.trays[0]?.color;
   const swatch = trayColor ? (
     <span
       aria-hidden

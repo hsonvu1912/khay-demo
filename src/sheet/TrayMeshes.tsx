@@ -1,20 +1,21 @@
 // =============================================================================
-// TrayMeshes — render mỗi PlacedTray từ TriMesh của engine (WYSIWYG với STL):
-// BufferGeometry indexed → toNonIndexed() + computeVertexNormals() cho flat
-// shading sắc cạnh. Material matte PLA (roughness 0.65). Tầng non-active mờ
-// 0.25. Đặt THEO HỆ ENGINE [tile.x, tile.y, zBase] — nằm trong group mapping
-// của Scene3D. Kèm DrawerGhost: khung edges LÒNG ngăn kéo W×D×H từ z=0.
+// TrayMeshes — render theo sheet.pieces (PieceEntry): mỗi MẢNH CSG 1 mesh,
+// WYSIWYG với STL. BufferGeometry indexed → toNonIndexed() +
+// computeVertexNormals() cho flat shading sắc cạnh. Material matte PLA
+// (roughness 0.65) màu THEO KHAY chứa mảnh. Tầng non-active mờ 0.25. Mảnh nằm
+// NGUYÊN VỊ trong toạ độ local khay → đặt cả nhóm tại [rect.x, rect.y, zBase]
+// (hệ engine, trong group mapping của Scene3D). Kèm DrawerGhost: khung edges
+// LÒNG ngăn kéo W×D×H từ z=0.
 // =============================================================================
 import { useEffect, useMemo } from 'react';
 import type {} from '@react-three/fiber';
 import { BoxGeometry, BufferAttribute, BufferGeometry, EdgesGeometry } from 'three';
-import type { PlacedTray } from '@/engine/layout';
 import type { TriMesh } from '@/engine/geometry/types';
 import { findColor, previewHexOf } from '@/engine/palette';
-import type { KhaySheet } from './useKhaySheet';
+import type { KhaySheet, PieceEntry } from './useKhaySheet';
 
 /** TriMesh engine → BufferGeometry non-indexed (flat normals). */
-function useTrayGeometry(mesh: TriMesh): BufferGeometry {
+function usePieceGeometry(mesh: TriMesh): BufferGeometry {
   const geo = useMemo(() => {
     const g = new BufferGeometry();
     g.setAttribute('position', new BufferAttribute(new Float32Array(mesh.positions), 3));
@@ -28,23 +29,16 @@ function useTrayGeometry(mesh: TriMesh): BufferGeometry {
   return geo;
 }
 
-function TrayMesh({
-  tray,
-  mesh,
-  active,
-}: {
-  tray: PlacedTray;
-  mesh: TriMesh;
-  active: boolean;
-}) {
-  const geo = useTrayGeometry(mesh);
+function PieceMesh({ entry, active }: { entry: PieceEntry; active: boolean }) {
+  const { tray, piece } = entry;
+  const geo = usePieceGeometry(piece.mesh);
   // previewHexOf: clamp hex cực đoan (#000000/#FFFFFF) để 3D còn diffuse shading;
   // swatch UI vẫn dùng hex gốc (đúng thiết kế).
   const hex = previewHexOf(findColor(tray.color));
   return (
     <mesh
       geometry={geo}
-      position={[tray.tile.x, tray.tile.y, tray.zBase]}
+      position={[tray.rect.x, tray.rect.y, tray.zBase]}
       castShadow={active}
       receiveShadow
     >
@@ -82,19 +76,9 @@ export function TrayMeshes({ sheet }: { sheet: KhaySheet }) {
   return (
     <>
       <DrawerGhost w={drawer.w} d={drawer.d} h={drawer.h} />
-      {sheet.built.trays.map((t) => {
-        const key = `${t.levelIdx}-${t.trayIdx}`;
-        const mesh = sheet.meshes.get(key);
-        if (!mesh) return null;
-        return (
-          <TrayMesh
-            key={key}
-            tray={t}
-            mesh={mesh}
-            active={t.levelIdx === sheet.activeLevel}
-          />
-        );
-      })}
+      {sheet.pieces.map((pe) => (
+        <PieceMesh key={pe.key} entry={pe} active={pe.tray.levelIdx === sheet.activeLevel} />
+      ))}
     </>
   );
 }

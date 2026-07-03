@@ -1,6 +1,7 @@
 // store — đọc/ghi KhayCatalog ở localStorage (demo). Giai đoạn B: thay bằng
 // Cloudflare KV `catalog:khay`. Merge NÔNG từng nhánh lên DEFAULT_KHAY_CATALOG
 // để field mới thêm vào schema không làm vỡ setting cũ đã lưu.
+// V2: bản lưu version !== 2 (setting v1 cũ) → RESET về default, không migrate.
 import type { KhayCatalog } from '@/engine/catalog';
 import { DEFAULT_KHAY_CATALOG } from '@/engine/catalog';
 
@@ -12,10 +13,13 @@ export function loadCatalog(): KhayCatalog {
     const raw = localStorage.getItem(KEY);
     if (!raw) return d;
     const p = JSON.parse(raw) as Partial<KhayCatalog>;
+    // Schema đổi giữa v1→v2 (pricing/limits/style khác hẳn) — bản cũ bỏ đi.
+    if (p.version !== 2) return d;
     const pl = p.limits ?? ({} as Partial<KhayCatalog['limits']>);
     return {
-      version: 1,
+      version: 2,
       pricing: { ...d.pricing, ...(p.pricing ?? {}) },
+      style: { ...d.style, ...(p.style ?? {}) },
       limits: {
         ...d.limits,
         ...pl,

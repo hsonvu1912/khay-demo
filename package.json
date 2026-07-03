@@ -8,13 +8,12 @@
     "dev": "vite --port 5190 --strictPort",
     "build": "tsc && vite build",
     "typecheck": "tsc",
-    "test-geometry": "tsx scripts/test-geometry.ts",
-    "test-model": "tsx scripts/test-model.ts",
-    "test": "tsx scripts/test-geometry.ts && tsx scripts/test-model.ts"
+    "test": "tsx scripts/test-v2.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
+    "manifold-3d": "^3.5.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "three": "^0.184.0"

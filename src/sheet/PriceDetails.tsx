@@ -1,7 +1,8 @@
 // =============================================================================
 // PriceDetails — popover chi tiết giá neo dưới price ticker của TopBar:
-// bảng từng khay (tên T{n}-L{n} · chấm màu · ~gram · thành tiền, đã gồm phí
-// mỗi khay) + tách nhựa/phí + giá sàn (nếu áp) + tổng. Đọc sheet.price.lines.
+// bảng theo MẢNH IN (tên T{n}-L{n}[-M{k}] · chấm màu · ~gram · thành tiền, đã
+// gồm phí mỗi mảnh) + tách nhựa / "Phí in k mảnh" + giá sàn (nếu áp) + tổng.
+// Đọc sheet.price.lines (computeKhayPrice v2 — mỗi line = 1 mảnh CSG thật).
 // =============================================================================
 import { useEffect } from 'react';
 import { useIsMobile } from './hooks';
@@ -53,11 +54,11 @@ export function PriceDetails({
         <div className="flex items-baseline justify-between">
           <span className="muuto-label">Chi tiết giá</span>
           <span className="num text-[11px] text-[var(--color-ink-3)]">
-            {p.trayCount} khay · ~{Math.round(p.totalGrams)}g
+            {sheet.trayCount} khay · {p.pieceCount} mảnh · ~{Math.round(p.totalGrams)}g
           </span>
         </div>
 
-        {/* Bảng từng khay */}
+        {/* Bảng từng mảnh in */}
         <div className="mt-2.5 max-h-[42vh] overflow-y-auto">
           {p.lines.map((ln, i) => {
             const c = findColor(ln.color);
@@ -68,7 +69,7 @@ export function PriceDetails({
                   style={{ background: c.hex }}
                   title={`${c.nameVi} (${c.name})`}
                 />
-                <span className="num w-[56px] shrink-0 text-[12px] font-medium">{ln.name}</span>
+                <span className="num w-[72px] shrink-0 text-[12px] font-medium">{ln.name}</span>
                 <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--color-ink-3)]">
                   {c.nameVi}
                 </span>
@@ -82,11 +83,13 @@ export function PriceDetails({
             );
           })}
           {p.lines.length === 0 && (
-            <p className="py-2 text-[11.5px] text-[var(--color-ink-3)]">Chưa có khay nào.</p>
+            <p className="py-2 text-[11.5px] text-[var(--color-ink-3)]">
+              {sheet.building ? 'Đang dựng hình…' : 'Chưa có khay nào.'}
+            </p>
           )}
         </div>
 
-        {/* Tách nhựa / phí — mỗi dòng khay ở trên ĐÃ gồm phí xử lý */}
+        {/* Tách nhựa / phí — mỗi dòng mảnh ở trên ĐÃ gồm phí in */}
         <div className="mt-2 space-y-1 border-t border-[var(--color-line)] pt-2.5">
           <div className="flex items-baseline justify-between text-[11.5px] text-[var(--color-ink-2)]">
             <span>
@@ -96,7 +99,7 @@ export function PriceDetails({
           </div>
           <div className="flex items-baseline justify-between text-[11.5px] text-[var(--color-ink-2)]">
             <span>
-              Phí xử lý {p.trayCount} khay × {formatPrice(sheet.catalog.pricing.baseFeePerTray)}
+              Phí in {p.pieceCount} mảnh × {formatPrice(sheet.catalog.pricing.baseFeePerPiece)}
             </span>
             <span className="num">{formatPrice(p.baseFees)}</span>
           </div>

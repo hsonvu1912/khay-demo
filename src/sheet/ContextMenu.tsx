@@ -1,7 +1,9 @@
 // =============================================================================
-// ContextMenu — menu chuột phải / long-press trên ô khay: Gộp N ô · Tách ô này
-// · 8 swatch màu enabled đầu (đổi màu KHAY đang chọn) · "Tất cả màu…".
-// Paper-card fixed tại (x,y) kẹp viewport; click ngoài / Escape đóng.
+// ContextMenu — menu chuột phải / long-press trên ô lưới: "Gộp N ô thành 1
+// khay" · "Tách khay này" · 8 swatch màu enabled đầu (đổi màu KHAY chứa anchor
+// selection qua setBlockColor) · "Tất cả màu…".
+// Paper-card fixed tại (x,y) kẹp viewport; click ngoài / Escape / selection
+// biến mất → đóng.
 // =============================================================================
 import { useEffect, useRef, type ReactNode } from 'react';
 import { PLA_MATTE_PALETTE } from '@/engine/palette';
@@ -95,9 +97,8 @@ export function ContextMenu({
   }, [sel, onClose]);
 
   if (!sel) return null;
-  const tray = sheet.layout.levels[sel.level]?.trays[sel.tray];
-  const cellCount =
-    (Math.abs(sel.r1 - sel.r0) + 1) * (Math.abs(sel.c1 - sel.c0) + 1);
+  const cellCount = (Math.abs(sel.r1 - sel.r0) + 1) * (Math.abs(sel.c1 - sel.c0) + 1);
+  const currentColor = sheet.selectedBlock?.color;
   // 8 màu enabled đầu — đủ bảng thì mở panel qua "Tất cả màu…".
   const swatches = PLA_MATTE_PALETTE.filter((c) => colorEnabled(sheet.catalog, c.id)).slice(0, 8);
 
@@ -114,22 +115,22 @@ export function ContextMenu({
       onContextMenu={(e) => e.preventDefault()}
     >
       <MenuButton
-        label={`Gộp ${cellCount} ô`}
-        hint="Gộp vùng chọn thành 1 ô lớn"
+        label={`Gộp ${cellCount} ô thành 1 khay`}
+        hint="Vùng chọn thành 1 khay rời"
         disabled={!sheet.canMergeSelection}
         reason="Kéo chọn từ 2 ô trở lên"
         onClick={wrap(sheet.mergeSelection)}
       />
       <MenuButton
-        label="Tách ô này"
-        hint="Trả ô gộp về các ô nhỏ"
+        label="Tách khay này"
+        hint="Trả khay gộp về các ô nhỏ"
         disabled={!sheet.canUnmergeSelection}
-        reason="Ô chưa được gộp"
+        reason="Khay chưa được gộp"
         onClick={wrap(sheet.unmergeSelection)}
       />
       <Divider />
       <div className="muuto-label px-2 pb-1.5 pt-1 text-[var(--color-ink-3)]">
-        Màu khay
+        Màu khay{sheet.selectedTray ? ` · ${sheet.selectedTray.name}` : ''}
       </div>
       <div className="grid grid-cols-8 gap-1 px-1.5 pb-1.5">
         {swatches.map((c) => (
@@ -138,9 +139,9 @@ export function ContextMenu({
             type="button"
             title={c.nameVi}
             aria-label={c.nameVi}
-            onClick={wrap(() => sheet.setTrayColor(sel.level, sel.tray, c.id))}
+            onClick={wrap(() => sheet.setBlockColor(c.id))}
             className={`h-6 w-6 rounded-full border transition-transform duration-150 hover:scale-110 ${
-              tray?.color === c.id
+              currentColor === c.id
                 ? 'border-2 border-[var(--color-ink)]'
                 : 'border-black/15'
             }`}

@@ -161,8 +161,9 @@ export function MeasureGuide({ open, onClose }: { open: boolean; onClose: () => 
       </Step>
 
       <Step n={4} title="Phần còn lại để khay lo">
-        Khay tự chia thành các miếng <b>≤ 176 mm mỗi cạnh</b> (vừa bàn in 3D) và
-        ghép sát nhau nằm gọn trong lòng ngăn — bạn không cần tính gì thêm.
+        Các khay rời tự chia theo lưới và ghép sát nhau nằm gọn trong lòng ngăn
+        — bạn không cần tính gì thêm. Khay lớn hơn <b>17 cm</b> sẽ in thành
+        nhiều mảnh <b>ghép mộng</b> — lòng khay vẫn liền mạch.
       </Step>
 
       <Btn solid onClick={onClose} className="w-full">

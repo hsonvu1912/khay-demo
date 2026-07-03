@@ -45,17 +45,13 @@ export function KhayApp() {
   const handleExport = useCallback(() => {
     if (exporting) return;
     setExporting(true);
-    // Nhường 1 frame cho spinner vẽ rồi mới build STL (sync, có thể nặng).
-    window.setTimeout(() => {
-      try {
-        const r = exportZip(sheet);
-        flash(`Đã tải ${r.files.length} file STL · ~${Math.round(r.totalGrams)}g nhựa`);
-      } catch (e) {
-        flash(e instanceof Error ? e.message : 'Xuất file thất bại', { error: true });
-      } finally {
-        setExporting(false);
-      }
-    }, 50);
+    // buildOrderZip ASYNC (CSG manifold) — spinner hiện suốt lúc dựng mảnh.
+    void exportZip(sheet)
+      .then((r) => flash(`Đã tải ${r.files.length} mảnh · ~${Math.round(r.totalGrams)}g nhựa`))
+      .catch((e: unknown) =>
+        flash(e instanceof Error ? e.message : 'Xuất file thất bại', { error: true }),
+      )
+      .finally(() => setExporting(false));
   }, [exporting, sheet, flash]);
 
   const openGuide = useCallback(() => setGuideOpen(true), []);
