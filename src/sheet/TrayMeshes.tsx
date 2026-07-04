@@ -2,17 +2,28 @@
 // TrayMeshes — render theo sheet.pieces (PieceEntry): mỗi MẢNH CSG 1 mesh,
 // WYSIWYG với STL. BufferGeometry indexed → toNonIndexed() +
 // computeVertexNormals() cho flat shading sắc cạnh. Material matte PLA
-// (roughness 0.65) màu THEO KHAY chứa mảnh. Tầng non-active mờ 0.25. Mảnh nằm
-// NGUYÊN VỊ trong toạ độ local khay → đặt cả nhóm tại [rect.x, rect.y, zBase]
+// (roughness 0.65) màu THEO KHAY chứa mảnh.
+//
+// TẦNG: mọi tầng render ĐẶC (transparency + depthWrite:false từng gây artifact
+// "vỡ hình" khi tầng trên lún 2.8mm vào miệng tầng dưới — mảnh trong suốt
+// sort sai từng tam giác). Thay bằng EXPLODED VIEW: tầng phía TRÊN tầng đang
+// chỉnh nhấc lên LIFT_GAP (animate damp), tầng đang chỉnh + dưới giữ nguyên vị
+// → luôn nhìn/click được lòng tầng active, chọn tầng trên cùng = stack khít
+// đúng vị trí thật. Tầng non-active nhuộm xám nhẹ để phân biệt.
+//
+// Mảnh nằm NGUYÊN VỊ trong toạ độ local khay → đặt tại [rect.x, rect.y, zBase]
 // (hệ engine, trong group mapping của Scene3D). Kèm DrawerGhost: khung edges
 // LÒNG ngăn kéo W×D×H từ z=0.
 // =============================================================================
-import { useEffect, useMemo, useRef } from 'react';
-import type {} from '@react-three/fiber';
-import { BoxGeometry, BufferAttribute, BufferGeometry, EdgesGeometry } from 'three';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useFrame } from '@react-three/fiber';
+import { BoxGeometry, BufferAttribute, BufferGeometry, Color, EdgesGeometry, Group } from 'three';
 import type { TriMesh } from '@/engine/geometry/types';
 import { findColor, previewHexOf } from '@/engine/palette';
 import type { KhaySheet, PieceEntry } from './useKhaySheet';
+
+/** Khoảng nhấc mỗi tầng phía trên tầng đang chỉnh (mm) — đủ thấy lòng tầng dưới. */
+export const LIFT_GAP = 55;
 
 /** TriMesh engine → BufferGeometry non-indexed (flat normals). */
 function buildGeometry(mesh: TriMesh): BufferGeometry {
@@ -68,37 +79,38 @@ function useSharedGeometries(pieces: PieceEntry[]): Map<TriMesh, BufferGeometry>
   return geos;
 }
 
-function PieceMesh({
-  entry,
-  geo,
-  active,
-}: {
-  entry: PieceEntry;
-  geo: BufferGeometry;
-  active: boolean;
-}) {
+/** Màu preview: tầng non-active nhuộm xám giấy 22% để dồn focus (vẫn ĐẶC). */
+function levelHex(colorId: string, active: boolean): string {
+  const base = previewHexOf(findColor(colorId));
+  if (active) return base;
+  return '#' + new Color(base).lerp(new Color('#8a877f'), 0.22).getHexString();
+}
+
+function PieceMesh({ entry, geo, active }: { entry: PieceEntry; geo: BufferGeometry; active: boolean }) {
   const { tray } = entry;
-  // previewHexOf: clamp hex cực đoan (#000000/#FFFFFF) để 3D còn diffuse shading;
-  // swatch UI vẫn dùng hex gốc (đúng thiết kế).
-  const hex = previewHexOf(findColor(tray.color));
+  const hex = levelHex(tray.color, active); // previewHexOf bên trong: clamp hex cực đoan (#000/#FFF)
   return (
     <mesh
       geometry={geo}
       position={[tray.rect.x, tray.rect.y, tray.zBase]}
-      castShadow={active}
+      castShadow
       receiveShadow
     >
-      {/* Chất matte Bambu PLA — tầng non-active mờ như "bản nháp". */}
-      <meshStandardMaterial
-        color={hex}
-        roughness={0.65}
-        metalness={0}
-        transparent={!active}
-        opacity={active ? 1 : 0.25}
-        depthWrite={active}
-      />
+      <meshStandardMaterial color={hex} roughness={0.65} metalness={0} />
     </mesh>
   );
+}
+
+/** Group 1 tầng — animate z tới độ nhấc đích (damp ~150ms, snap khi sát). */
+function LevelGroup({ lift, children }: { lift: number; children: ReactNode }) {
+  const ref = useRef<Group>(null);
+  useFrame((_, dt) => {
+    const g = ref.current;
+    if (!g) return;
+    const next = g.position.z + (lift - g.position.z) * Math.min(1, dt * 10);
+    g.position.z = Math.abs(next - lift) < 0.05 ? lift : next;
+  });
+  return <group ref={ref}>{children}</group>;
 }
 
 /** Khung edges mảnh (ink 30%) thể hiện LÒNG ngăn kéo W×D×H, đáy tại z=0. */
@@ -120,19 +132,32 @@ export function DrawerGhost({ w, d, h }: { w: number; d: number; h: number }) {
 export function TrayMeshes({ sheet }: { sheet: KhaySheet }) {
   const { drawer } = sheet.layout;
   const geos = useSharedGeometries(sheet.pieces);
+  // Gom mảnh theo tầng để nhấc cả tầng bằng 1 group (exploded view).
+  const byLevel = useMemo(() => {
+    const m = new Map<number, PieceEntry[]>();
+    for (const pe of sheet.pieces) {
+      const arr = m.get(pe.tray.levelIdx) ?? [];
+      arr.push(pe);
+      m.set(pe.tray.levelIdx, arr);
+    }
+    return [...m.entries()].sort((a, b) => a[0] - b[0]);
+  }, [sheet.pieces]);
   return (
     <>
       <DrawerGhost w={drawer.w} d={drawer.d} h={drawer.h} />
-      {sheet.pieces.map((pe) => {
-        const geo = geos.get(pe.piece.mesh);
-        if (!geo) return null; // không xảy ra — geos dựng từ chính pieces
+      {byLevel.map(([levelIdx, entries]) => {
+        const above = levelIdx - sheet.activeLevel;
+        const lift = above > 0 ? above * LIFT_GAP : 0;
         return (
-          <PieceMesh
-            key={pe.key}
-            entry={pe}
-            geo={geo}
-            active={pe.tray.levelIdx === sheet.activeLevel}
-          />
+          <LevelGroup key={levelIdx} lift={lift}>
+            {entries.map((pe) => {
+              const geo = geos.get(pe.piece.mesh);
+              if (!geo) return null; // không xảy ra — geos dựng từ chính pieces
+              return (
+                <PieceMesh key={pe.key} entry={pe} geo={geo} active={levelIdx === sheet.activeLevel} />
+              );
+            })}
+          </LevelGroup>
         );
       })}
     </>

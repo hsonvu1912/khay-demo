@@ -14,6 +14,7 @@ import { OrbitControls } from '@react-three/drei';
 import { NeutralToneMapping, Vector3 } from 'three';
 import type { PerspectiveCamera } from 'three';
 import type { KhaySheet } from './useKhaySheet';
+import { LIFT_GAP } from './TrayMeshes';
 
 const _fitDir = new Vector3();
 const _fitTarget = new Vector3();
@@ -70,6 +71,10 @@ export function Scene3D({
   onPointerMissed?: () => void;
 }) {
   const { w, d, h } = sheet.layout.drawer;
+  // Exploded view: tầng phía trên tầng active được TrayMeshes nhấc LIFT_GAP/tầng
+  // — camera phải fit theo chiều cao HIỂN THỊ, không thì tầng nhấc bị cắt khung.
+  const liftLevels = Math.max(0, sheet.layout.levels.length - 1 - sheet.activeLevel);
+  const fitH = h + liftLevels * LIFT_GAP;
   return (
     <Canvas
       shadows="percentage" /* PCF — three mới deprecate PCFSoft ("soft"/true), fallback PCF + spam warn mỗi frame */
@@ -104,7 +109,7 @@ export function Scene3D({
       <group rotation-x={-Math.PI / 2} position={[-w / 2, 0, d / 2]}>
         {children}
       </group>
-      <FitCamera w={w} d={d} h={h} />
+      <FitCamera w={w} d={d} h={fitH} />
       {import.meta.env.DEV && <ExposeR3F />}
       <OrbitControls
         makeDefault
